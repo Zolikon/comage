@@ -10,14 +10,14 @@ choosing the reviewers and the model each one runs on. Reviewers always run as s
 ## Install
 
 ```bash
-claude plugin marketplace add ~/work/rewriter
-claude plugin install rewriter@rewriter
+claude plugin marketplace add ~/work/comage
+claude plugin install comage@comage
 ```
 
 Or try it for one session without installing:
 
 ```bash
-claude --plugin-dir ~/work/rewriter
+claude --plugin-dir ~/work/comage
 ```
 
 Requires Node 22. There is nothing to `npm install`.
@@ -40,7 +40,7 @@ puts the skill in `~/.claude/skills/rewriter` with its paths pointing at that ap
 ## Use
 
 ```
-/rewriter:rewriter docs/specs/auth.md
+/comage:rewriter docs/specs/auth.md
 ```
 
 or just ask: "review docs/specs/auth.md in ReWriter". Claude opens the UI and waits. Comment, press

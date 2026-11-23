@@ -1,9 +1,9 @@
 {
-  "name": "rewriter",
+  "name": "comage",
   "owner": { "name": "Zoltan Pozsonyi" },
   "plugins": [
     {
-      "name": "rewriter",
+      "name": "comage",
       "source": "./",
       "description": "PR-style review rounds for markdown documents in a local browser UI, with optional AI reviewers per round.",
       "category": "productivity"

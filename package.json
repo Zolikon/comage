@@ -1,0 +1,14 @@
+{
+  "name": "rewriter",
+  "private": true,
+  "type": "module",
+  "description": "Local PR-style review rounds for markdown documents. No dependencies to install.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "version": "1.0.0",
+  "license": "MIT",
+  "bin": {
+    "rewriter": "rewriter.mjs"
+  }
+}

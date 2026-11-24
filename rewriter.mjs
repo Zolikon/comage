@@ -21,6 +21,8 @@ const USAGE = `ReWriter — local review rounds for markdown documents (articles
   publish                              snapshot the document, hand the round to the author
   status                               human-readable summary
   reviewers                            reviewers the author can pick (JSON)
+  request-review [--file reviewers.json] [--reviewer R]... [--note N]
+                                       ask for an AI review for the author (same as the UI's "AI review" button)
   wait      [--timeout seconds]        block until the author submits the round, then print pending
   serve     [--port 4870] [--no-open]  start the review UI
 
@@ -56,18 +58,23 @@ function status(dir) {
   const p = m.pending(dir);
   const sev = m.SEVERITIES.slice().reverse()
     .map((x) => `${x} ${by((c) => c.status !== 'resolved' && c.severity === x)}`).join(', ');
+  const review = p.request?.mode === 'review';
+  const asked = review
+    ? `Author asked for an AI review by: ${p.request.reviewers.map((x) => x.persona + (x.model ? ` [${x.model}]` : '')).join(', ')}.`
+    : 'Author asked for fixes.';
   const lines = [
     `Document: ${m.articlePath(dir, s)} (${m.docType(s)})`,
     `Round ${r.n} (${r.status})`,
     `Comments: ${by((c) => c.status === 'open')} open, ${by((c) => c.status === 'addressed')} addressed, ${by((c) => c.status === 'resolved')} resolved`,
     `Unresolved by severity: ${sev}`,
     `Needs Claude: ${p.needsAction.length}${p.needsAction.length ? ` (${p.needsAction.map((x) => `${x.id}:${x.why.join('+')}`).join(', ')})` : ''}`,
+    ...(p.held ? [`Held for the author: ${p.held} (waits for their next "Submit round")`] : []),
     {
-      preparing: p.request?.aiReview
-        ? `Author asked for an AI review by: ${p.request.reviewers.map((x) => x.persona + (x.model ? ` [${x.model}]` : '')).join(', ')}. Next: Claude replies, runs the reviewers, then \`publish\`.`
-        : 'Next: Claude adds comments/replies, then `publish`.',
-      open: 'Next: author reviews in the UI and presses "Submit round".',
-      submitted: 'Next: Claude runs `next`, then `pending`.',
+      preparing: !p.request ? 'Next: Claude runs `publish` to hand the document to the author.'
+        : review ? `${asked} Next: Claude runs the reviewers, posts their findings with \`add\`, then \`publish\`.`
+          : `${asked} Next: Claude acts on the items above, replies, then \`publish\`.`,
+      open: 'Next: author reviews in the UI and presses "Submit round" or "AI review".',
+      submitted: `${asked} Next: Claude runs \`next\`, then \`pending\`.`,
     }[r.status],
   ];
   process.stdout.write(`${lines.join('\n')}\n`);
@@ -86,6 +93,22 @@ async function main() {
       break;
     }
     case 'reviewers': out(listReviewers(m.load(dir))); break;
+    case 'request-review': {
+      // An entry with a background whose name isn't listed yet is a new reviewer (saved with the review).
+      // Everything else is looked up by name: a listed reviewer stays as listed even if the file repeats
+      // its definition, which is what `reviewers` output pasted back in looks like.
+      const fromFile = flags.file ? readJsonFile(flags.file) : [];
+      const listed = new Set(listReviewers(m.load(dir)).map((r) => r.persona));
+      const isNew = (x) => Boolean(x?.background) && !listed.has(String(x.persona || '').trim());
+      m.submit(dir, {
+        mode: 'review',
+        reviewers: [...fromFile.filter((x) => !isNew(x)), ...flags.reviewer.map((persona) => ({ persona }))],
+        custom: fromFile.filter(isNew),
+        note: flags.note,
+      });
+      out(m.pending(dir));
+      break;
+    }
     case 'wait': {
       const deadline = flags.timeout ? Date.now() + Number(flags.timeout) * 1000 : Infinity;
       for (;;) {

@@ -1,13 +1,14 @@
 ---
 name: rewriter
-description: Use when a markdown document (an article draft, a design spec, an implementation plan, or any other doc) is ready for human review, or the user asks to review one, wants it reviewed in ReWriter, asks for AI reviewers on a document, says they finished/submitted a ReWriter round, or types /rewriter (e.g. "/rewriter docs/specs/auth.md", "/rewriter start video-factory", "/rewriter next"). Runs PR-style review rounds in a local browser UI - the author comments and decides, Claude fixes, and on any round the author can ask for an AI review by reviewers and models they pick.
+description: Use whenever a markdown document needs the user's review - right after you write or substantially rewrite a design spec, implementation plan, design doc or article draft for the user (open it in ReWriter straight away instead of asking them to read the file), when the user asks to review a markdown document, asks for AI or role-based reviewers on one ("review it with a DBA and a security reviewer", "run the default panel"), says they submitted or finished a ReWriter round, or types /rewriter (e.g. "/rewriter docs/specs/auth.md", "/rewriter next"). Not for READMEs, notes, changelogs or small edits. Opens a local browser UI for PR-style review rounds where the author comments and decides, Claude fixes, and reviewer subagents post their findings.
 ---
 
 # ReWriter
 
 Local PR-style review loop for one markdown document. The author reads it in a browser UI, comments,
-and decides on reviewer comments. You (Claude) fix the document and answer. On any round the author may
-also ask for an AI review; reviewers always run as subagents. State lives next to the document in
+and decides on reviewer comments. Every round ends in one of two ways, and the author picks which:
+**Submit round** (you act on the author's comments and decisions) or **AI review** (reviewers run as
+subagents and post findings; nothing is fixed in that round). State lives next to the document in
 `.rewriter/` (`review.json` + one snapshot per round). Never edit those files by hand: always go through
 the CLI.
 
@@ -25,12 +26,13 @@ found`, run `node "${CLAUDE_PLUGIN_ROOT}/rewriter.mjs" <command> <doc> …` inst
 | `init <doc> --type T` | start a review: round 1, `preparing`. `T` = `article`, `spec`, `plan`, or any word |
 | `add <doc> --file comments.json` | post comments (or one inline: `--severity --body [--quote] [--reviewer]… [--suggestion]`) |
 | `reply <doc> --file replies.json` | answer comments (or one inline: `reply <doc> <id> --kind K --body B [--quote Q]`) |
-| `pending <doc>` | JSON: what the author asked for (`request`) and what needs you (`needsAction`) |
+| `pending <doc>` | JSON: what the author asked for (`request`, with its `mode`), what needs you (`needsAction`), what waits (`held`) |
 | `next <doc>` | open the next round after the author submitted |
 | `publish <doc>` | snapshot the document, hand the round to the author |
-| `wait <doc>` | block until the author submits, then print `pending` |
+| `wait <doc>` | block until the author ends the round (either button), then print `pending` |
 | `status <doc>` | short summary + what happens next |
 | `reviewers <doc>` | JSON: every reviewer available, `suggested` = meant for this document type |
+| `request-review <doc> --file reviewers.json` | ask for an AI review for the author, as the UI's **AI review** button does (also `--reviewer NAME`…, `--note`) |
 | `serve <doc>` | start the UI (run in background; it live-reloads, start it once per document) |
 
 Round states: `preparing` (you work) → `open` (author works) → `submitted` (back to you).
@@ -38,25 +40,47 @@ Round states: `preparing` (you work) → `open` (author works) → `submitted` (
 
 ## Start a review (round 1)
 
+Do this without being asked whenever the description applies, including for a document you wrote yourself
+in this turn. Don't ask "shall I open it in ReWriter?": open it.
+
 1. `status <doc>`. If a review exists, continue from its state rather than starting over. Otherwise
    `init <doc> --type T`: pick `T` from what the document is (`article`, `spec`, `plan`; anything else gets
    the generic reviewers).
-2. **Default: no AI review in round 1.** The document goes to the author untouched. Run reviewers first
-   (see "AI review") only if the user asked for that in chat, e.g. "review it with the default panel".
-3. `publish <doc>`.
-4. Start `serve <doc>` with `run_in_background` if it isn't already running for this document, and give
+2. `publish <doc>`. Round 1 is always the untouched document: post no comments of your own.
+3. Start `serve <doc>` with `run_in_background` if it isn't already running for this document, and give
    the user the URL it prints.
-5. Start `wait <doc>` with `run_in_background`. When it exits, the author has submitted: go to "Next
+4. If the user asked for reviewers in chat, go to "Reviewers asked for in chat" now.
+5. Start `wait <doc>` with `run_in_background`. When it exits, the author has ended the round: go to "Next
    round" without waiting to be told. If you can't run it in the background, ask the user to tell you when
-   they have pressed **Submit round**.
-6. Tell the user: comment in the browser, then press **Submit round** and choose "Fix only" or "Fix, then
-   AI review" with the reviewers and models they want.
+   they have pressed a button.
+6. Tell the user in one or two lines: the document is open in the browser; comment and press **Submit
+   round** to have you fix things, or press **AI review** to have reviewers read it first.
 
-## Next round (author submitted)
+## Reviewers asked for in chat
 
-1. `status <doc>`. If the round is still `open`, the author hasn't pressed **Submit round** yet.
-2. `next <doc>`, then `pending <doc>`. Read `request.note` first: it is the author's instruction for this
-   round. Then act on each `needsAction` item; its `why` says what it needs:
+"Review it with a DBA and a security reviewer", "run the default panel": the findings belong in the UI,
+never in chat. Do what the **AI review** button does:
+
+1. Make sure the review exists and the UI is running ("Start a review", steps 1-3). If the round is
+   `submitted` or `preparing`, finish it first ("Next round") so that a round is `open`.
+2. Build the panel. `reviewers <doc>` lists who exists. "Default panel" = the `suggested` entries. A role
+   that isn't listed is a new reviewer: write its `persona`, a `background` (who they are, what they look
+   for) and `focus` bullets from what the user said.
+3. Write `.rewriter/tmp-reviewers.json`, an array of `{ persona, model?, background?, focus? }`, run
+   `request-review <doc> --file .rewriter/tmp-reviewers.json`, delete the file. Only new reviewers need
+   `background` and `focus`; a reviewer that is already listed is used as listed, whatever else the entry
+   says. `model` overrides the reviewer's own model for this round; `"session"` means your
+   session's model even when the reviewer has one of its own. For listed reviewers alone, `request-review <doc> --reviewer "Architect" --reviewer "DBA"` is
+   enough.
+4. Continue with "Next round", once. A `wait` you started earlier exits at this point, because
+   `request-review` ended the round: that is this same request, not a second one.
+
+## Next round (the author pressed a button)
+
+1. `status <doc>`. If the round is still `open`, the author hasn't pressed either button yet.
+2. `next <doc>`, then `pending <doc>`. `request.mode` says which of the two the author chose.
+3. **`fix`** (Submit round): read `request.note` first, it is the author's instruction for this round.
+   Then act on each `needsAction` item; its `why` says what it needs:
    - `approved`: apply the fix to the document (follow the author's note if there is one). Reply with
      `fixed` and one line on what changed. If the quoted text changed, pass the new text as `quote` so the
      comment re-anchors.
@@ -67,21 +91,20 @@ Round states: `preparing` (you work) → `open` (author works) → `submitted` (
      `challenge` and a reason.
    - `user-reply`: answer the latest message (`reply`, `fixed` or `challenge`).
    Comments that are open with no decision are carried over: leave them alone and don't re-post them.
-3. If `request.aiReview` is true, run the AI review (below) with exactly `request.reviewers`, after the
-   fixes. If it is false, post no new comments of your own: the author asked for fixes only.
-4. `publish <doc>`. The running UI refreshes by itself (if the server isn't running, start it).
-5. Start `wait <doc>` in the background again.
-6. Report in chat: fixed N, accepted N, challenged N (with ids), new comments N by which reviewers.
+   Post no new comments of your own.
+4. **`review`** (AI review): don't edit the document and don't reply to anything. `held` counts the
+   author's pending items; they wait for the author's next **Submit round**. Run the AI review (below)
+   with exactly `request.reviewers`. `request.note` is addressed to the reviewers.
+5. `publish <doc>`. The running UI refreshes by itself (if the server isn't running, start it).
+6. Start `wait <doc>` in the background again.
+7. Report in chat. After `fix`: fixed N, accepted N, challenged N (with ids). After `review`: N new
+   comments and by which reviewers, plus the author's shortlist (below).
 
 ## AI review
 
-Who reviews, in order of precedence:
-
-1. `request.reviewers` from `pending` (the author picked them in the UI): each has `persona`,
-   `background`, `focus`, `model`. Use exactly these, no more, no fewer.
-2. Reviewers the user named in chat. Look names up in `reviewers <doc>`; for an unknown name, write a
-   persona from what the user said.
-3. Otherwise the `suggested` entries from `reviewers <doc>`.
+Who reviews: exactly `request.reviewers` from `pending`, no more, no fewer. Each has `persona`,
+`background`, `focus`, `model`. Both the UI button and `request-review` put them there, so there is no
+other source.
 
 Running them:
 
@@ -96,7 +119,8 @@ Running them:
   - `{{scope}}`: first AI review of this document = "Review the whole document."; later ones = "Review the
     whole document as it stands now. These points are already raised, don't repeat them: …" followed by
     the open comments' quotes and one-line bodies. For a long document where little changed, narrow it to
-    "Review only these passages, changed since the last round: …".
+    "Review only these passages, changed since the last round: …". If `request.note` is not empty, add
+    "The author asks: <note>".
 - Each subagent returns a JSON array of `{severity, quote, body, suggestion?}`. Set `reviewers` to its
   persona and post via `add --file`.
 - **Merge, don't average.** Merge only findings on the same text making the same point. Opposing views
@@ -160,16 +184,23 @@ the new text after an edit.
 
 ## Reviewers
 
-Built-in profiles live in `${CLAUDE_PLUGIN_ROOT}/reviewers.default.json` (`rewriter reviewers <doc>` lists
-them), keyed by document type (`article`, `spec`, `plan`,
-`generic`). The user's own go in `~/.claude/rewriter/reviewers.json`, same shape, and win on a name clash:
+`rewriter reviewers <doc>` lists every reviewer there is. They come from three places, later ones winning
+on a name clash:
+
+1. Built-in starters in `${CLAUDE_PLUGIN_ROOT}/reviewers.default.json`, keyed by document type (`article`,
+   `spec`, `plan`, `generic`). The type only decides which ones are `suggested` (the "default panel").
+2. The author's library, `~/.claude/rewriter/reviewers.json`: same shape, any keys. The UI saves under
+   `library`.
+3. Reviewers kept with this review only.
 
 ```json
-{ "spec": [{ "persona": "DBA", "background": "Owns the production database…", "focus": ["Migrations", "Query cost"], "model": "sonnet" }] }
+{ "library": [{ "persona": "DBA", "background": "Owns the production database…", "focus": ["Migrations", "Query cost"], "model": "sonnet" }] }
 ```
 
-Reviewers the author defines in the Submit dialog are saved with that review and can be picked again in
-later rounds. When the user asks for a reviewer to be available everywhere, add it to their file.
+In the AI review dialog the author can save a reviewer, or a change to one, to their library, or use it
+with this document only; those stay with the review, as do new reviewers you pass to `request-review`.
+When the user asks for a reviewer to be available everywhere, add it to their library file (keep what is
+already in it).
 
 ## Rules
 
@@ -184,10 +215,17 @@ later rounds. When the user asks for a reviewer to be available everywhere, add 
 
 Highlights and margin bubbles are coloured by severity (author comments are purple). Clicking either opens
 the comment. The sidebar has filters (severity, reviewer, status; resolved comments are hidden by default).
-To comment, select text, or use the `+` beside a block, or "General comment". **Submit round** opens a
-dialog: "Fix only" or "Fix, then AI review", with a checklist of reviewers (grouped by profile, last
-panel preselected), a model per reviewer, "+ New reviewer", and a note for Claude. The "Changes since round
-N" toggle shows inserted text in green and removals as red markers. Earlier rounds can be viewed read-only.
+To comment, select text, or use the `+` beside a block, or "General comment". The header has two buttons.
+**Submit round** opens a dialog with the count of items for Claude and a note. **AI review** opens a
+dialog with a panel of the reviewers that will run (the last panel used on this document is preloaded), a
+library (the author's saved reviewers, then the built-in starters), and an editor for the selected
+reviewer: its description, its model, and buttons to use it as is or to save the change to the library. **Export**
+downloads the author's library as `reviewers.json` for sharing (someone else saves it as their own library
+file), and **?** explains how a review runs.
+The author can delete an own comment until Claude has answered it. While a round is with you the UI is
+locked and says so: "Waiting for Claude" (`submitted`) or "Claude is working" (`preparing`). It unlocks
+when you `publish`. The "Changes since round N" toggle
+shows inserted text in green and removals as red markers. Earlier rounds can be viewed read-only.
 Keys: `j/k` move, `a/A` approve (with comment), `d/D` decline (with comment), `i` ignore, `u` undo,
 `r` resolve/reopen, `R` reply, `y` copy suggestion, `c` comment on selection, `f` toggle changes, `?` help.
 Ignore means "won't act": it resolves the comment and needs no reply from you.

@@ -56,11 +56,12 @@ test('human-only first round: publish with no comments, author comments, fix onl
   const u = m.userComment(spec, { anchor: { kind: 'article' }, body: 'name the store' });
   m.submit(spec);
   const sub = m.pending(spec);
-  assert.deepEqual(sub.request, { aiReview: false, reviewers: [], note: '' });
+  assert.deepEqual(sub.request, { mode: 'fix', aiReview: false, reviewers: [], note: '' });
   m.nextRound(spec);
   const p = m.pending(spec);
   assert.equal(p.docType, 'spec');
   assert.equal(p.request.aiReview, false);
+  assert.equal(p.held, 0);
   assert.deepEqual(p.needsAction.map((x) => [x.id, x.why]), [[u.id, ['user-comment']]]);
 });
 
@@ -133,8 +134,9 @@ test('server: reviewers endpoint, submit with a request, bad request is a 400', 
     assert.equal(reg.last, null);
     assert.ok(reg.models.includes('opus'));
     assert.ok(reg.reviewers.find((r) => r.persona === 'Implementer').suggested);
-    assert.equal((await post('/api/submit', { aiReview: true, reviewers: [] })).status, 400);
-    assert.equal((await post('/api/submit', { aiReview: true, reviewers: [{ persona: 'Implementer', model: 'sonnet' }] })).status, 200);
+    assert.equal((await post('/api/submit', { mode: 'both' })).status, 400);
+    assert.equal((await post('/api/submit', { mode: 'review', reviewers: [] })).status, 400);
+    assert.equal((await post('/api/submit', { mode: 'review', reviewers: [{ persona: 'Implementer', model: 'sonnet' }] })).status, 200);
     assert.deepEqual(m.load(spec).rounds[0].request.reviewers, [{ persona: 'Implementer', model: 'sonnet' }]);
     const again = await (await fetch(`${base}/api/reviewers`)).json();
     assert.deepEqual(again.last, [{ persona: 'Implementer', model: 'sonnet' }]);
@@ -177,4 +179,136 @@ test('article in a folder still works by directory', () => {
   const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
   assert.match(run('init', dir).stdout, /\.rewriter \(document, round 1/);
   assert.equal(run('init', dir, '--type', 'article').status, 1);
+});
+
+test('AI review is review only: pending items are held, then come back on Submit round', () => {
+  const spec = join(tmpDocs(), 'spec.md');
+  m.init(spec, { type: 'spec' });
+  m.addComments(spec, [{ severity: 'MAJOR', body: 'which store?', quote: 'stores widgets' }, { severity: 'MINOR', body: 'say why' }]);
+  m.publish(spec);
+  m.setDecision(spec, 'c1', { type: 'approve' });
+  m.userReply(spec, 'c2', 'why?');
+  const u = m.userComment(spec, { anchor: { kind: 'article' }, body: 'name the store' });
+  const r = m.submit(spec, { mode: 'review', reviewers: [{ persona: 'Architect' }], note: 'storage only' });
+  assert.deepEqual(r.request, { mode: 'review', aiReview: true, reviewers: [{ persona: 'Architect', model: '' }], note: 'storage only' });
+  let p = m.pending(spec); // submitted
+  assert.equal(p.request.mode, 'review');
+  assert.deepEqual([p.needsAction.length, p.held], [0, 3]);
+  m.nextRound(spec);
+  p = m.pending(spec); // preparing round 2
+  assert.deepEqual([p.needsAction.length, p.held], [0, 3]);
+  m.addComments(spec, [{ severity: 'MINOR', body: 'from the architect', reviewers: ['Architect'] }]);
+  m.publish(spec);
+  m.submit(spec, { mode: 'fix' });
+  m.nextRound(spec);
+  p = m.pending(spec);
+  assert.deepEqual([p.request.mode, p.held, p.carriedOver], ['fix', 0, 1]);
+  assert.deepEqual(Object.fromEntries(p.needsAction.map((x) => [x.id, x.why])),
+    { c1: ['approved'], c2: ['user-reply'], [u.id]: ['user-comment'] });
+  assert.equal(m.load(spec).comments[0].decision.type, 'approve');
+});
+
+test('submit mode: bad value rejected, requests saved by 1.0.0 read as review', () => {
+  const spec = join(tmpDocs(), 'spec.md');
+  m.init(spec, { type: 'spec' });
+  m.publish(spec);
+  assert.throws(() => m.submit(spec, { mode: 'both' }), /mode must be fix or review/);
+  assert.throws(() => m.submit(spec, { mode: 'review' }), /at least one reviewer/);
+  assert.equal(m.load(spec).rounds[0].status, 'open');
+  assert.equal(m.requestMode({ aiReview: true, reviewers: [] }), 'review');
+  assert.equal(m.requestMode({ aiReview: false }), 'fix');
+  assert.equal(m.requestMode({ mode: 'fix', aiReview: true }), 'fix');
+  assert.equal(m.requestMode(null), 'fix');
+  m.userComment(spec, { anchor: { kind: 'article' }, body: 'mine' });
+  m.submit(spec, { aiReview: true, reviewers: [{ persona: 'Architect' }] });
+  const state = m.load(spec);
+  delete state.rounds[0].request.mode; // what 1.0.0 wrote
+  m.save(spec, state);
+  const p = m.pending(spec);
+  assert.deepEqual([p.request.mode, p.request.aiReview, p.held, p.needsAction.length], ['review', true, 1, 0]);
+});
+
+test('a held comment can be deleted in a later round, an answered one cannot', () => {
+  const spec = join(tmpDocs(), 'spec.md');
+  m.init(spec, { type: 'spec' });
+  m.addComments(spec, [{ severity: 'MINOR', body: 'reviewer comment' }]);
+  m.publish(spec);
+  const held = m.userComment(spec, { anchor: { kind: 'article' }, body: 'held' });
+  const answered = m.userComment(spec, { anchor: { kind: 'article' }, body: 'answered' });
+  m.submit(spec, { mode: 'review', reviewers: [{ persona: 'Architect' }] });
+  m.nextRound(spec);
+  m.reply(spec, answered.id, { kind: 'reply', body: 'noted' });
+  m.publish(spec);
+  assert.deepEqual(m.deleteComment(spec, held.id), { deleted: held.id });
+  assert.throws(() => m.deleteComment(spec, answered.id), (e) => e.status === 403);
+  assert.throws(() => m.deleteComment(spec, 'c1'), (e) => e.status === 403);
+});
+
+test('cli: request-review does what the AI review button does', () => {
+  const dir = tmpDocs();
+  const spec = join(dir, 'spec.md');
+  const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
+  const dba = { persona: 'DBA', background: 'Owns the production database.', focus: ['Migrations'], model: 'sonnet' };
+  const file = join(dir, 'reviewers.json');
+  run('init', spec, '--type', 'spec');
+
+  const early = run('request-review', spec, '--reviewer', 'Architect');
+  assert.equal(early.status, 1);
+  assert.match(early.stderr, /needs round 1 to be 'open', but it is 'preparing'/);
+  run('publish', spec);
+  assert.match(run('status', spec).stdout, /presses "Submit round" or "AI review"/);
+
+  writeFileSync(file, JSON.stringify([dba, { persona: 'Nobody' }]));
+  const bad = run('request-review', spec, '--file', file);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /unknown reviewer: Nobody/);
+  assert.equal(m.load(spec).rounds[0].status, 'open');
+  assert.equal(m.load(spec).customReviewers, undefined);
+  const none = run('request-review', spec);
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /at least one reviewer/);
+
+  m.userComment(spec, { anchor: { kind: 'article' }, body: 'name the store' });
+  writeFileSync(file, JSON.stringify([dba]));
+  const ok = run('request-review', spec, '--file', file, '--reviewer', 'Architect', '--note', 'storage only');
+  assert.equal(ok.status, 0, ok.stderr);
+  const p = JSON.parse(ok.stdout);
+  assert.deepEqual([p.roundStatus, p.request.mode, p.request.note, p.held], ['submitted', 'review', 'storage only', 1]);
+  assert.deepEqual(p.request.reviewers.map((r) => [r.persona, r.profile]), [['Architect', 'spec'], ['DBA', 'custom']]);
+  assert.equal(p.request.reviewers[1].background, dba.background);
+  assert.equal(run('request-review', spec, '--reviewer', 'Architect').status, 1); // already submitted
+
+  let st = run('status', spec).stdout;
+  assert.match(st, /Author asked for an AI review by: Architect, DBA \[sonnet\]\. Next: Claude runs `next`/);
+  assert.match(st, /Held for the author: 1/);
+  run('next', spec);
+  assert.match(run('status', spec).stdout, /AI review by: Architect, DBA \[sonnet\]\. Next: Claude runs the reviewers/);
+  run('publish', spec);
+  m.submit(spec);
+  st = run('status', spec).stdout;
+  assert.match(st, /Author asked for fixes\. Next: Claude runs `next`/);
+  assert.doesNotMatch(st, /Held for the author/);
+  assert.match(run('help').stdout, /request-review/);
+});
+
+test('cli: request-review uses listed reviewers as listed, even when the file repeats their definition', () => {
+  const dir = tmpDocs();
+  const spec = join(dir, 'spec.md');
+  const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
+  run('init', spec, '--type', 'spec');
+  run('publish', spec);
+  // What Claude gets from `reviewers` for "run the default panel": full definitions, background included.
+  const suggested = JSON.parse(run('reviewers', spec).stdout).filter((r) => r.suggested);
+  assert.deepEqual(suggested.map((r) => r.persona), ['Architect', 'Implementer', 'Test Engineer', 'Scope Skeptic']);
+  suggested[0].model = 'opus';
+  const file = join(dir, 'reviewers.json');
+  writeFileSync(file, JSON.stringify([...suggested, { persona: 'DBA', background: 'Owns the production database.' }]));
+  const ok = run('request-review', spec, '--file', file);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.deepEqual(JSON.parse(ok.stdout).request.reviewers.map((r) => [r.persona, r.profile, r.model]), [
+    ['Architect', 'spec', 'opus'], ['Implementer', 'spec', ''], ['Test Engineer', 'spec', ''], ['Scope Skeptic', 'spec', ''], ['DBA', 'custom', ''],
+  ]);
+  assert.deepEqual(m.load(spec).customReviewers.map((r) => r.persona), ['DBA']);
+  const after = JSON.parse(run('reviewers', spec).stdout).filter((r) => r.suggested).map((r) => r.persona);
+  assert.deepEqual(after, ['Architect', 'Implementer', 'Test Engineer', 'Scope Skeptic']);
 });

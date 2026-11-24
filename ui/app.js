@@ -34,6 +34,9 @@ const latest = () => ui.data.review.rounds[ui.data.review.rounds.length - 1];
 const viewedRound = () => ui.viewRound ?? latest().n;
 const isPast = () => ui.viewRound !== null && ui.viewRound !== latest().n;
 const readOnly = () => isPast() || latest().status !== 'open';
+// Which outcome a round's request asked for; requests from before modes existed only have aiReview.
+const reqMode = (rq) => rq?.mode || (rq?.aiReview ? 'review' : 'fix');
+const names = (rq) => rq.reviewers.map((r) => r.persona).join(', ');
 const byId = (id) => ui.data.review.comments.find((c) => c.id === id);
 
 async function api(method, path, body) {
@@ -189,6 +192,15 @@ function render() {
   document.title = `ReWriter: ${ui.view?.title || review.article}`;
   $('#doc-title').textContent = ui.view?.title || review.article;
   document.body.classList.toggle('read-only', readOnly());
+  // The round is with Claude (handed over, or being worked on): nothing may change until it publishes.
+  const withClaude = !isPast() && (L.status === 'submitted' || L.status === 'preparing');
+  if (readOnly()) {
+    // Close whatever could still send a change: the round dialogs, a comment or reply form, the "Comment" button.
+    if (!dlg.hidden) closeSubmit();
+    if (ui.form) { if (ui.form.kind === 'new') closePopover(); ui.form = null; }
+    $('#sel-btn').hidden = true;
+  }
+  $('#new-general').disabled = readOnly();
 
   // Header controls appear only when they can do something.
   const sel = $('#round-select');
@@ -199,8 +211,8 @@ function render() {
   $('#round-label').textContent = `Round ${viewedRound()}`;
   const st = $('#round-status');
   st.hidden = !isPast() && L.status === 'open'; // "open" is the normal state: say nothing
-  st.textContent = isPast() ? 'snapshot' : L.status;
-  st.className = `pill st-${isPast() ? 'past' : L.status}`;
+  st.textContent = isPast() ? 'snapshot' : ({ submitted: 'Waiting for Claude', preparing: 'Claude is working' }[L.status] || L.status);
+  st.className = `pill st-${isPast() ? 'past' : L.status}${withClaude ? ' working' : ''}`;
 
   $('#diff-wrap').hidden = !ui.base; // no previous round: nothing to diff against
   $('#diff-toggle').checked = Boolean(ui.base) && ui.diff;
@@ -212,19 +224,26 @@ function render() {
     return h('span', { class: `pill sev sev-${s}${n ? '' : ' zero'}`, title: `${n} unresolved ${s === 'USER' ? 'from you' : s}` }, `${s === 'USER' ? 'You' : s} ${n}`);
   }));
   $('#submit-btn').disabled = readOnly();
+  $('#review-btn').disabled = readOnly();
 
   const banner = $('#banner');
+  const prev = review.rounds[review.rounds.length - 2]; // the round whose request Claude is working on
   let msg = '';
+  let info = false;
   if (ui.view?.error) msg = `Document could not be loaded: ${ui.view.error}`;
   else if (isPast()) msg = `Viewing the round ${ui.viewRound} snapshot (read-only). Comments show their current status.`;
-  else if (L.status === 'preparing') msg = `Claude is preparing round ${L.n}. Read-only until it publishes.`;
-  else if (L.status === 'submitted') {
-    const rq = L.request;
-    const asked = rq?.aiReview ? `Asked for fixes plus an AI review by ${rq.reviewers.map((r) => r.persona).join(', ')}.` : 'Asked for fixes only.';
-    msg = `Round ${L.n} submitted. ${asked} Claude picks it up if it is waiting; otherwise tell it to continue.`;
+  else if (L.status === 'preparing') {
+    info = reqMode(prev?.request) === 'review';
+    msg = info ? `AI review running: ${names(prev.request)}. Findings appear here when they are done.`
+      : `Claude is preparing round ${L.n}. Read-only until it publishes.`;
+  } else if (L.status === 'submitted') {
+    info = true;
+    const pickup = 'Claude picks it up if it is waiting; otherwise tell it to continue.';
+    msg = reqMode(L.request) === 'review' ? `AI review requested: ${names(L.request)}. ${pickup}`
+      : `Round ${L.n} submitted. Asked for fixes only. ${pickup}`;
   }
   banner.hidden = !msg; banner.textContent = msg;
-  banner.className = L.status === 'submitted' && !isPast() ? 'info' : '';
+  banner.className = [info ? 'info' : '', withClaude ? 'busy' : ''].join(' ').trim();
 
   renderChips();
   renderDoc();
@@ -410,7 +429,7 @@ function renderCard(c, where) {
       btn('Reply', '', () => openForm(c.id, 'reply'), 'R');
       btn('Resolve', '', () => act(() => api('POST', `/api/comments/${c.id}/resolve`), 'Resolved'), 'r');
     } else btn('Reopen', '', () => act(() => api('POST', `/api/comments/${c.id}/reopen`)), 'r');
-    if (c.author === 'user' && c.round === latest().n && !c.thread.some((t) => t.author === 'ai')) {
+    if (c.author === 'user' && !c.thread.some((t) => t.author === 'ai')) {
       btn('Delete', 'decline', () => { if (confirm('Delete this comment?')) act(() => api('DELETE', `/api/comments/${c.id}`)); });
     }
     card.append(acts);
@@ -703,108 +722,272 @@ $('#reviewer-filter').addEventListener('change', (e) => { ui.reviewer = e.target
 $('#new-general').addEventListener('click', (e) => newComment({ kind: 'article' }, e.target.getBoundingClientRect()));
 $('#help-btn').addEventListener('click', () => { $('#help').hidden = false; });
 $('#help').addEventListener('click', () => { $('#help').hidden = true; });
-// ---------- submit dialog: fixes only, or fixes plus an AI review by chosen reviewers ----------
+// ---------- ending a round: "Submit round" (Claude fixes) or "AI review" (reviewers read, nothing is fixed) ----------
 const dlg = $('#submit-dlg');
-const closeSubmit = () => { dlg.hidden = true; dlg.replaceChildren(); };
-const modelLabel = (m) => (m || 'session model');
+// A dialog that holds work the author would lose sets dlgGuard: it returns the question to ask before a
+// backdrop click or Escape closes it, or '' when there is nothing to lose.
+let dlgGuard = null;
+const closeSubmit = () => { dlg.hidden = true; dlg.replaceChildren(); dlgGuard = null; };
+function dismissDialog() {
+  const question = dlgGuard?.();
+  if (question && !confirm(question)) return;
+  closeSubmit();
+}
+const modelLabel = (m) => (m || 'session');
 
-async function openSubmit() {
+// toFix: what Claude would act on after "Submit round". undecided: reviewer comments with no decision yet.
+function pendingCounts() {
+  const cs = ui.data.review.comments;
+  return {
+    undecided: cs.filter((c) => c.author === 'ai' && c.status === 'open' && !c.decision).length,
+    toFix: cs.filter((c) => c.status !== 'resolved' && (c.decision?.type === 'approve' || c.decision?.type === 'decline'
+      || (c.author === 'user' && !c.thread.some((t) => t.author === 'ai')) || c.thread[c.thread.length - 1]?.author === 'user')).length,
+  };
+}
+
+function showDialog(...children) {
+  dlg.replaceChildren(h('div', { class: 'help-card submit-card', onclick: (e) => e.stopPropagation() }, ...children));
+  dlg.hidden = false;
+}
+
+// Posts the request that ends the round; `body` is a function so it is read at click time.
+function sendButton(label, done, body) {
+  const send = h('button', { class: 'primary', onclick: async () => {
+    const payload = body();
+    if (!payload) return;
+    send.disabled = true;
+    try { await api('POST', '/api/submit', payload); } catch (e) { toast(e.message, true); send.disabled = false; return; }
+    closeSubmit();
+    toast(done);
+    await load();
+  } }, label);
+  return send;
+}
+
+function openSubmitDialog() {
+  if (readOnly()) return;
+  closePopover(); ui.form = null;
+  const { toFix, undecided } = pendingCounts();
+  const note = h('textarea', { placeholder: 'Note for Claude about this round (optional)…' });
+  const send = sendButton('Submit round', 'Round submitted', () => ({ mode: 'fix', note: note.value.trim() }));
+  const gate = () => { send.disabled = toFix === 0 && !note.value.trim(); };
+  note.addEventListener('input', gate);
+  gate();
+  showDialog(
+    h('h3', {}, `Submit round ${latest().n}`),
+    h('p', { class: 'muted' }, `${toFix} item(s) for Claude to act on.${undecided ? ` ${undecided} reviewer comment(s) have no decision and carry over.` : ''}`),
+    toFix ? null : h('p', { class: 'muted' }, 'Nothing for Claude to act on yet: comment, decide on a reviewer comment, or write a note below.'),
+    note,
+    h('div', { class: 'row' }, h('button', { onclick: closeSubmit }, 'Cancel'), send));
+}
+
+// The AI review dialog is a small workbench: the panel (who runs), the library (who exists) and an editor
+// for the selected reviewer. Reviewers can be saved to the author's library or used with this document only.
+const SOURCE_TAG = { review: 'this document', user: 'yours', 'built-in': 'starter' };
+const SOURCE_ORDER = ['review', 'user', 'built-in'];
+// What the editor shows for a stored reviewer: its background, then its focus points as bullets.
+const storedDesc = (r) => [r.background, ...(r.focus || []).map((f) => `- ${f}`)].join('\n').trim();
+
+async function openReviewDialog() {
   if (readOnly()) return;
   let reg;
   try { reg = await api('GET', '/api/reviewers'); } catch (e) { toast(e.message, true); return; }
   closePopover(); ui.form = null;
-  const cs = ui.data.review.comments;
-  const undecided = cs.filter((c) => c.author === 'ai' && c.status === 'open' && !c.decision).length;
-  const toFix = cs.filter((c) => c.status !== 'resolved' && (c.decision?.type === 'approve' || c.decision?.type === 'decline'
-    || (c.author === 'user' && !c.thread.some((t) => t.author === 'ai')) || c.thread[c.thread.length - 1]?.author === 'user')).length;
-  // Start from the previous AI round's panel; the first time, from the reviewers meant for this document type.
-  const lastPick = new Map((reg.last || []).map((r) => [r.persona, r.model || '']));
-  const st = { ai: false, note: '', rows: reg.reviewers.map((r) => ({
-    ...r, on: reg.last ? lastPick.has(r.persona) : r.suggested, model: lastPick.get(r.persona) || r.model || '', isNew: false,
-  })) };
+  const { toFix } = pendingCounts();
+  const byName = (name) => reg.reviewers.find((r) => r.persona === name);
 
-  const list = h('div', { class: 'rv-list' });
-  const modelSelect = (value, onchange) => {
-    const sel = h('select', { title: 'Model this reviewer runs on' },
-      [...new Set([...reg.models, value])].map((m) => h('option', { value: m, selected: m === value }, modelLabel(m))));
-    sel.addEventListener('change', () => onchange(sel.value));
-    return sel;
+  // panel: [{ persona, model, def }]. def is null for a reviewer used as stored, or { background } for one
+  // used with a description that isn't saved anywhere yet.
+  // In a request the model "session" means the session's own model; in here that is the empty model.
+  let panel = (reg.last || []).filter((p) => byName(p.persona))
+    .map((p) => ({ persona: p.persona, model: p.model === 'session' ? '' : (p.model || byName(p.persona).model || ''), def: null }));
+  let sel = null; // the editor: { persona, isNew, desc, model }
+  let touched = false; // the author did something here that closing would throw away
+  dlgGuard = () => (touched ? 'Close the AI review dialog? The panel you set up will be lost.' : '');
+  const inPanel = (name) => panel.find((p) => p.persona === name);
+  const putInPanel = (entry) => {
+    const i = panel.findIndex((p) => p.persona === entry.persona);
+    if (i < 0) panel.push(entry); else panel[i] = entry;
   };
-  const drawRows = () => {
-    const groups = [...new Set(st.rows.map((r) => r.profile))]
-      .sort((a, b) => Number(st.rows.some((r) => r.profile === b && r.suggested)) - Number(st.rows.some((r) => r.profile === a && r.suggested)));
-    list.replaceChildren(...groups.flatMap((g) => [
-      h('div', { class: 'rv-group' }, g === 'custom' ? 'yours' : g),
-      ...st.rows.filter((r) => r.profile === g).map((r) => {
-        const cb = h('input', { type: 'checkbox', checked: r.on });
-        cb.addEventListener('change', () => { r.on = cb.checked; });
-        return h('label', { class: 'rv-row', title: [r.background, ...r.focus.map((f) => `• ${f}`)].join('\n') },
-          cb, h('span', { class: 'rv-name' }, r.persona), modelSelect(r.model, (m) => { r.model = m; }));
-      }),
-    ]));
-  };
-  drawRows();
 
-  const nName = h('input', { type: 'text', placeholder: 'Name, e.g. Security Reviewer', maxlength: 60 });
-  const nDesc = h('textarea', { placeholder: 'Who they are and what they look for…' });
-  let nModel = '';
-  const addForm = h('div', { class: 'rv-add', hidden: true }, nName, nDesc, h('div', { class: 'row' },
-    modelSelect('', (m) => { nModel = m; }),
-    h('button', { class: 'small', onclick: () => { addForm.hidden = true; } }, 'Cancel'),
-    h('button', { class: 'small primary', onclick: () => {
-      const persona = nName.value.trim(); const background = nDesc.value.trim();
-      if (!persona || !background) { toast('Give the reviewer a name and a description', true); return; }
-      st.rows = st.rows.filter((r) => r.persona !== persona);
-      st.rows.push({ persona, background, focus: [], model: nModel, profile: 'custom', on: true, isNew: true });
-      nName.value = ''; nDesc.value = ''; addForm.hidden = true; drawRows();
-    } }, 'Add reviewer')));
+  const left = h('div', { class: 'rv-left' });
+  const right = h('div', { class: 'rv-edit' });
+  const actions = h('div', { class: 'rv-actions' });
+  const models = h('div', { class: 'rv-models' });
 
-  const panel = h('div', { class: 'rv-panel', hidden: true }, list,
-    h('button', { class: 'small ghost', onclick: () => { addForm.hidden = false; nName.focus(); } }, '+ New reviewer'), addForm);
-  const radio = (ai, title, sub) => {
-    const input = h('input', { type: 'radio', name: 'rw-mode', checked: st.ai === ai });
-    input.addEventListener('change', () => { st.ai = ai; panel.hidden = !ai; });
-    return h('label', { class: 'mode' }, input, h('span', {}, h('b', {}, title), h('span', { class: 'muted' }, sub)));
+  const openStored = (name) => { const r = byName(name); sel = { persona: name, isNew: false, desc: storedDesc(r), model: r.model || '' }; draw(); };
+  const openFromPanel = (name) => {
+    const p = inPanel(name); const r = byName(name);
+    sel = { persona: name, isNew: !r, desc: p.def ? p.def.background : storedDesc(r), model: p.model };
+    draw();
   };
-  const note = h('textarea', { placeholder: 'Note for Claude about this round (optional)…' });
-  const send = h('button', { class: 'primary', onclick: async () => {
-    const on = st.rows.filter((r) => r.on);
-    if (st.ai && !on.length) { toast('Pick at least one reviewer', true); return; }
-    const body = { aiReview: st.ai, note: note.value.trim() };
-    if (st.ai) {
-      body.reviewers = on.filter((r) => !r.isNew).map((r) => ({ persona: r.persona, model: r.model }));
-      body.custom = on.filter((r) => r.isNew).map((r) => ({ persona: r.persona, background: r.background, focus: r.focus, model: r.model }));
+  // Does the editor hold something the panel wouldn't run as shown?
+  const unapplied = () => {
+    if (!sel) return false;
+    const name = sel.persona.trim(); const p = inPanel(name); const r = byName(name);
+    if (!p && !r) return Boolean(name || sel.desc.trim());
+    const desc = p?.def ? p.def.background : storedDesc(r);
+    const model = p ? p.model : (r.model || '');
+    return sel.desc.trim() !== desc || sel.model !== model;
+  };
+  const valid = () => {
+    const name = sel.persona.trim();
+    if (!name || !sel.desc.trim()) { toast('Give the reviewer a name and a description', true); return false; }
+    if (sel.isNew && byName(name)) {
+      // Keep what was typed: it becomes an unsaved change to the existing reviewer.
+      toast(`"${name}" already exists. Opened it.`);
+      sel = { persona: name, isNew: false, desc: sel.desc, model: sel.model };
+      draw();
+      return false;
     }
-    send.disabled = true;
-    try { await api('POST', '/api/submit', body); } catch (e) { toast(e.message, true); send.disabled = false; return; }
-    closeSubmit();
-    toast('Round submitted');
-    await load();
-  } }, 'Submit round');
+    return true;
+  };
+  const use = () => {
+    if (!valid()) return;
+    const name = sel.persona.trim(); const r = byName(name); const desc = sel.desc.trim();
+    putInPanel({ persona: name, model: sel.model, def: !r || desc !== storedDesc(r) ? { background: desc } : null });
+    sel.persona = name;
+    touched = true;
+    draw();
+  };
+  const save = async () => {
+    if (!valid()) return;
+    const name = sel.persona.trim(); const { model } = sel;
+    try {
+      await api('PUT', '/api/reviewers', { persona: name, background: sel.desc.trim(), model });
+      reg = await api('GET', '/api/reviewers');
+    } catch (e) { toast(e.message, true); return; }
+    putInPanel({ persona: name, model, def: null });
+    touched = true;
+    sel = { persona: name, isNew: false, desc: storedDesc(byName(name)), model };
+    draw();
+    toast('Saved to your library');
+  };
+  const removeFromLibrary = async () => {
+    const name = sel.persona;
+    if (!confirm(`Remove "${name}" from your library?`)) return;
+    try {
+      await api('DELETE', `/api/reviewers/${encodeURIComponent(name)}`);
+      reg = await api('GET', '/api/reviewers');
+    } catch (e) { toast(e.message, true); return; }
+    if (byName(name)) openStored(name); // a starter of that name is back
+    else { panel = panel.filter((p) => p.persona !== name); sel = null; draw(); }
+    toast('Removed from your library');
+  };
 
-  dlg.replaceChildren(h('div', { class: 'help-card submit-card', onclick: (e) => e.stopPropagation() },
-    h('h3', {}, `Submit round ${latest().n}`),
-    h('p', { class: 'muted' }, `${toFix} item(s) for Claude to act on.${undecided ? ` ${undecided} reviewer comment(s) have no decision and carry over.` : ''}`),
-    radio(false, 'Fix only', ' Claude acts on your decisions and comments, nothing else.'),
-    radio(true, 'Fix, then AI review', ' Claude does the same, then the reviewers you pick read the result.'),
-    panel, note,
-    h('div', { class: 'row' }, h('button', { onclick: closeSubmit }, 'Cancel'), send)));
-  dlg.hidden = false;
+  // The author's saved reviewers as a file: someone else saves it as their own ~/.claude/rewriter/reviewers.json.
+  const exportLibrary = () => {
+    if (!reg.reviewers.some((r) => r.source === 'user')) { toast('Your library is empty. Save a reviewer first.', true); return; }
+    h('a', { href: '/api/reviewers/export', download: 'reviewers.json' }).click();
+  };
+
+  const drawActions = () => {
+    const r = sel.isNew ? null : byName(sel.persona);
+    const dirty = Boolean(r) && (sel.desc.trim() !== storedDesc(r) || sel.model !== (r.model || ''));
+    let btns;
+    if (!r) btns = [['Save & use', save, true], ['Use once', use]];
+    else if (r.source === 'review') btns = [['Save & use', save], ['Use', use, true]];
+    else if (dirty) btns = [['Update & use', save, true], ['Use without updating', use]];
+    else btns = [['Use', use, true]];
+    actions.replaceChildren(...btns.map(([label, fn, primary]) => h('button', { class: primary ? 'primary' : '', onclick: fn }, label)));
+    if (r?.source === 'user') actions.append(h('button', { class: 'small ghost rv-remove', onclick: removeFromLibrary }, 'Remove from library'));
+  };
+  const drawModels = () => models.replaceChildren(...reg.models.map((m) => h('button', {
+    class: m === sel.model ? 'on' : '', onclick: () => { sel.model = m; touched = true; drawModels(); drawActions(); },
+  }, modelLabel(m))));
+  const drawRight = () => {
+    if (!sel) { right.replaceChildren(h('p', { class: 'muted' }, 'Select a reviewer to see or edit it, or create a new one.')); return; }
+    let head;
+    if (sel.isNew) {
+      head = h('input', { type: 'text', placeholder: 'Name, e.g. Security Reviewer', maxlength: 60 });
+      head.value = sel.persona;
+      head.addEventListener('input', () => { sel.persona = head.value; touched = true; });
+    } else head = h('div', { class: 'rv-head' }, h('b', {}, sel.persona), h('span', { class: 'rv-tag' }, SOURCE_TAG[byName(sel.persona).source]));
+    const desc = h('textarea', { placeholder: 'Who they are and what they look for…' });
+    desc.value = sel.desc;
+    desc.addEventListener('input', () => { sel.desc = desc.value; touched = true; drawActions(); });
+    drawModels(); drawActions();
+    right.replaceChildren(head, desc, h('div', { class: 'rv-label' }, 'Model'), models, actions);
+    if (sel.isNew && !sel.persona) head.focus();
+  };
+  const drawLeft = () => {
+    const library = [...reg.reviewers].sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source) || a.persona.localeCompare(b.persona));
+    const on = (name) => (sel && !sel.isNew && sel.persona === name ? ' on' : '');
+    left.replaceChildren(
+      h('div', { class: 'rv-label' }, `Panel (${panel.length})`),
+      ...(panel.length ? panel.map((p) => h('div', { class: `rv-item${sel && sel.persona === p.persona ? ' on' : ''}`, onclick: () => openFromPanel(p.persona) },
+        h('span', { class: 'rv-name' }, p.persona), h('span', { class: 'rv-tag' }, modelLabel(p.model)),
+        h('button', { class: 'small ghost', title: 'Remove from the panel', onclick: (e) => { e.stopPropagation(); panel = panel.filter((x) => x !== p); touched = true; draw(); } }, '✕')))
+        : [h('p', { class: 'muted rv-empty' }, 'No reviewers in the panel yet. Add one or more from the library, or create your own.')]),
+      h('p', { class: 'muted rv-hint' }, 'Each reviewer runs as its own subagent. There is no upper limit, but 2–5 usually cover a document; every extra one costs time and tokens.'),
+      h('div', { class: 'rv-label rv-label-row' }, 'Library',
+        h('button', { class: 'small ghost', title: 'Download your saved reviewers as reviewers.json, to share', onclick: exportLibrary }, 'Export')),
+      // A reviewer that is in the panel opens as the panel will run it, wherever it is clicked.
+      ...library.map((r) => h('div', { class: `rv-item${on(r.persona)}`, onclick: () => (inPanel(r.persona) ? openFromPanel(r.persona) : openStored(r.persona)) },
+        h('span', { class: 'rv-check' }, inPanel(r.persona) ? '✓' : ''),
+        h('span', { class: 'rv-name' }, r.persona), h('span', { class: 'rv-tag' }, SOURCE_TAG[r.source]))),
+      h('button', { class: 'small ghost rv-new', onclick: () => { sel = { persona: '', isNew: true, desc: '', model: '' }; draw(); } }, '+ New reviewer'));
+  };
+  function draw() {
+    drawLeft(); drawRight();
+    // No reviewers, no review: the button says why it is off.
+    send.disabled = !panel.length;
+    send.title = panel.length ? '' : 'Add at least one reviewer to the panel';
+  }
+
+  const note = h('textarea', { placeholder: 'Note for the reviewers (optional), e.g. what to focus on…' });
+  note.addEventListener('input', () => { touched = true; });
+  const send = sendButton('Start AI review', 'AI review requested', () => {
+    if (!panel.length) { toast('Add at least one reviewer to the panel', true); return null; }
+    if (unapplied() && !confirm(`"${sel.persona.trim() || 'The new reviewer'}" has changes you have not applied. Start without them?`)) return null;
+    return {
+      mode: 'review',
+      note: note.value.trim(),
+      reviewers: panel.filter((p) => !p.def).map((p) => ({ persona: p.persona, model: p.model || 'session' })),
+      custom: panel.filter((p) => p.def).map((p) => ({ persona: p.persona, background: p.def.background, focus: [], model: p.model })),
+    };
+  });
+
+  const sev = (name, means) => h('li', {}, h('span', { class: `pill sev sev-${name}` }, name), ` ${means}`);
+  const help = h('div', { class: 'rv-help', hidden: true },
+    h('ol', {},
+      h('li', {}, "Every reviewer in the panel runs as its own subagent, all at the same time, each on the model you picked. They read the whole document and don't see each other's findings."),
+      h('li', {}, 'Each one reports what it finds from its own angle, and gives every finding a severity:',
+        h('ul', {}, sev('BLOCKER', "can't go ahead as written"), sev('MAJOR', 'a real problem'), sev('MINOR', 'worth fixing'), sev('NITPICK', 'taste')),
+        'A reviewer with nothing to say reports nothing.'),
+      h('li', {}, 'Claude merges findings that make the same point about the same text into one comment. It names every reviewer who raised it and keeps the highest severity. Opposing views stay separate.'),
+      h('li', {}, 'All findings arrive together, as comments in the next round. The document itself is not changed.'),
+      h('li', {}, 'You approve, decline or ignore each comment, then press Submit round to have Claude fix what you approved.')));
+  const helpBtn = h('button', { class: 'ghost small', title: 'How an AI review works', onclick: () => { help.hidden = !help.hidden; } }, '?');
+
+  draw();
+  showDialog(
+    h('h3', { class: 'rv-title' }, 'AI review', helpBtn),
+    h('p', { class: 'muted' }, 'The reviewers in the panel read the document as it is now. Their findings arrive as comments in the next round.'),
+    help,
+    toFix ? h('p', { class: 'muted' }, `Your ${toFix} pending item(s) stay as they are until you press Submit round.`) : null,
+    h('div', { class: 'rv-panes' }, left, right), note,
+    h('div', { class: 'row' }, h('button', { onclick: closeSubmit }, 'Cancel'), send));
+  dlg.firstChild.classList.add('wide');
 }
-$('#submit-btn').addEventListener('click', openSubmit);
-dlg.addEventListener('click', closeSubmit);
+$('#submit-btn').addEventListener('click', openSubmitDialog);
+$('#review-btn').addEventListener('click', openReviewDialog);
+// Close on a click that both starts and ends on the backdrop: a text selection dragged out of the card must not.
+let pressedBackdrop = false;
+dlg.addEventListener('mousedown', (e) => { pressedBackdrop = e.target === dlg; });
+dlg.addEventListener('click', (e) => { if (e.target === dlg && pressedBackdrop) dismissDialog(); });
 
 // ---------- keyboard ----------
 document.addEventListener('keydown', (e) => {
   if (e.target.closest('textarea, input, select') || e.metaKey || e.ctrlKey || e.altKey) {
-    if (e.key === 'Escape' && !dlg.hidden && !e.target.closest('.rv-add')) closeSubmit();
+    if (e.key === 'Escape' && !dlg.hidden && !e.target.closest('.rv-edit')) dismissDialog();
     return;
   }
   if (!dlg.hidden && e.key !== 'Escape') return;
   const id = ui.selected;
   const c = id && byId(id);
   const k = e.key;
-  if (k === 'Escape') { $('#help').hidden = true; closeSubmit(); closePopover(); if (ui.form) closeForm(); $('#sel-btn').hidden = true; return; }
+  if (k === 'Escape') { $('#help').hidden = true; if (!dlg.hidden) dismissDialog(); closePopover(); if (ui.form) closeForm(); $('#sel-btn').hidden = true; return; }
   if (k === '?') { $('#help').hidden = !$('#help').hidden; return; }
   if (k === 'j') return move(1);
   if (k === 'k') return move(-1);

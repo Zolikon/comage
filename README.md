@@ -43,21 +43,41 @@ puts the skill in `~/.claude/skills/rewriter` with its paths pointing at that ap
 /comage:rewriter docs/specs/auth.md
 ```
 
-or just ask: "review docs/specs/auth.md in ReWriter". Claude opens the UI and waits. Comment, press
-**Submit round**, and pick "Fix only" or "Fix, then AI review".
+You rarely need to type that. Claude opens ReWriter on its own after it writes a spec, plan or article
+draft for you, or when you ask for a review ("review docs/specs/auth.md", "review it with a DBA and a
+security reviewer").
+
+Each round ends with one of two buttons:
+
+- **Submit round**: Claude acts on your comments and on your decisions about reviewer comments.
+- **AI review**: the reviewers you pick, each on the model you pick, read the document and post their
+  findings. Nothing is fixed in that round; your own pending items wait for your next **Submit round**.
 
 Review state is stored next to the document in `.rewriter/`.
 
 ## Reviewers
 
-Built-in panels per document type are in `reviewers.default.json` (`article`, `spec`, `plan`, `generic`).
-Add your own in `~/.claude/rewriter/reviewers.json`, same shape:
+The **AI review** dialog shows one library: your saved reviewers first, then the built-in starters. Select
+one to read or edit its description and pick its model, then add it to the panel. A new reviewer, or a
+change to an existing one, can be saved to your library (**Save & use**, **Update & use**) or kept with
+this document only (**Use once**, **Use without updating**).
+
+Your library is `~/.claude/rewriter/reviewers.json`, shared by every document and project. You can also
+edit it by hand:
 
 ```json
-{ "spec": [{ "persona": "DBA", "background": "Owns the production database.", "focus": ["Migrations", "Query cost"], "model": "sonnet" }] }
+{ "library": [{ "persona": "DBA", "background": "Owns the production database. Looks at migrations and query cost.", "model": "sonnet" }] }
 ```
 
-Reviewers created in the Submit dialog are saved with that review and can be reused in later rounds.
+To share your reviewers, press **Export** above the library: it downloads `reviewers.json`. The other
+person saves it as their own `~/.claude/rewriter/reviewers.json`, or copies the entries they want into
+theirs. There is no import button yet.
+
+The panel has no upper limit, but every reviewer is a separate subagent run; 2–5 usually cover a document.
+The **?** in the dialog explains how a review runs.
+
+The starters are in `reviewers.default.json`, grouped by document type. That grouping only matters when you
+ask Claude in chat for "the default panel".
 
 ## Layout
 
@@ -69,7 +89,6 @@ Reviewers created in the Submit dialog are saved with that review and can be reu
 | `rewriter.mjs`, `lib/` | CLI, review model, local server, reviewer registry |
 | `ui/` | browser UI |
 | `vendor/` | bundled `marked` (MIT), so no install step |
-| `docs/` | design notes and implementation plan |
 | `install.mjs` | component installer (app + skill, no plugin needed) |
 | `test/` | `npm test` |
 

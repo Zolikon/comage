@@ -243,3 +243,50 @@ test('a held comment can be deleted in a later round, an answered one cannot', (
   assert.throws(() => m.deleteComment(spec, answered.id), (e) => e.status === 403);
   assert.throws(() => m.deleteComment(spec, 'c1'), (e) => e.status === 403);
 });
+
+test('cli: request-review does what the AI review button does', () => {
+  const dir = tmpDocs();
+  const spec = join(dir, 'spec.md');
+  const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
+  const dba = { persona: 'DBA', background: 'Owns the production database.', focus: ['Migrations'], model: 'sonnet' };
+  const file = join(dir, 'reviewers.json');
+  run('init', spec, '--type', 'spec');
+
+  const early = run('request-review', spec, '--reviewer', 'Architect');
+  assert.equal(early.status, 1);
+  assert.match(early.stderr, /needs round 1 to be 'open', but it is 'preparing'/);
+  run('publish', spec);
+  assert.match(run('status', spec).stdout, /presses "Submit round" or "AI review"/);
+
+  writeFileSync(file, JSON.stringify([dba, { persona: 'Nobody' }]));
+  const bad = run('request-review', spec, '--file', file);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /unknown reviewer: Nobody/);
+  assert.equal(m.load(spec).rounds[0].status, 'open');
+  assert.equal(m.load(spec).customReviewers, undefined);
+  const none = run('request-review', spec);
+  assert.equal(none.status, 1);
+  assert.match(none.stderr, /at least one reviewer/);
+
+  m.userComment(spec, { anchor: { kind: 'article' }, body: 'name the store' });
+  writeFileSync(file, JSON.stringify([dba]));
+  const ok = run('request-review', spec, '--file', file, '--reviewer', 'Architect', '--note', 'storage only');
+  assert.equal(ok.status, 0, ok.stderr);
+  const p = JSON.parse(ok.stdout);
+  assert.deepEqual([p.roundStatus, p.request.mode, p.request.note, p.held], ['submitted', 'review', 'storage only', 1]);
+  assert.deepEqual(p.request.reviewers.map((r) => [r.persona, r.profile]), [['Architect', 'spec'], ['DBA', 'custom']]);
+  assert.equal(p.request.reviewers[1].background, dba.background);
+  assert.equal(run('request-review', spec, '--reviewer', 'Architect').status, 1); // already submitted
+
+  let st = run('status', spec).stdout;
+  assert.match(st, /Author asked for an AI review by: Architect, DBA \[sonnet\]\. Next: Claude runs `next`/);
+  assert.match(st, /Held for the author: 1/);
+  run('next', spec);
+  assert.match(run('status', spec).stdout, /AI review by: Architect, DBA \[sonnet\]\. Next: Claude runs the reviewers/);
+  run('publish', spec);
+  m.submit(spec);
+  st = run('status', spec).stdout;
+  assert.match(st, /Author asked for fixes\. Next: Claude runs `next`/);
+  assert.doesNotMatch(st, /Held for the author/);
+  assert.match(run('help').stdout, /request-review/);
+});

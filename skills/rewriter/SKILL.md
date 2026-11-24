@@ -6,9 +6,10 @@ description: Use whenever a markdown document needs the user's review - right af
 # ReWriter
 
 Local PR-style review loop for one markdown document. The author reads it in a browser UI, comments,
-and decides on reviewer comments. Every round ends in one of two ways, and the author picks which:
-**Submit round** (you act on the author's comments and decisions) or **AI review** (reviewers run as
-subagents and post findings; nothing is fixed in that round). State lives next to the document in
+and decides on reviewer comments. Every round ends in one of three ways, and the author picks which:
+**Submit round** (you act on the author's comments and decisions), **AI review** (reviewers run as
+subagents and post findings; nothing is fixed in that round) or **Approve** (the document is final as it
+stands: the review is closed and its UI stops). State lives next to the document in
 `.rewriter/` (`review.json` + one snapshot per round). Never edit those files by hand: always go through
 the CLI.
 
@@ -24,18 +25,23 @@ found`, run `node "${CLAUDE_PLUGIN_ROOT}/rewriter.mjs" <command> <doc> …` inst
 | Command | What it does |
 |---|---|
 | `init <doc> --type T` | start a review: round 1, `preparing`. `T` = `article`, `spec`, `plan`, or any word |
-| `add <doc> --file comments.json` | post comments (or one inline: `--severity --body [--quote] [--reviewer]… [--suggestion]`) |
-| `reply <doc> --file replies.json` | answer comments (or one inline: `reply <doc> <id> --kind K --body B [--quote Q]`) |
+| `add <doc> --file -` | post comments, a JSON array on stdin (or one inline: `--severity --body [--quote] [--reviewer]… [--suggestion]`) |
+| `reply <doc> --file -` | answer comments, a JSON array on stdin (or one inline: `reply <doc> <id> --kind K --body B [--quote Q]`) |
 | `pending <doc>` | JSON: what the author asked for (`request`, with its `mode`), what needs you (`needsAction`), what waits (`held`) |
-| `next <doc>` | open the next round after the author submitted |
+| `next <doc>` | open the next round after the author submitted; the round is then yours (this session's) |
+| `claim <doc>` | take over a round that another Claude session started and left unfinished |
 | `publish <doc>` | snapshot the document, hand the round to the author |
-| `wait <doc>` | block until the author ends the round (either button), then print `pending` |
+| `wait <doc>` | block until the author ends the round (any of the three buttons), then print `pending` |
+| `approve <doc>` | approve for the author, as the UI's **Approve** button does: the review is closed and its UI stops (`--note`) |
+| `reopen <doc>` | start a new round on an approved review; the round is then yours (this session's) |
 | `status <doc>` | short summary + what happens next |
 | `reviewers <doc>` | JSON: every reviewer available, `suggested` = meant for this document type |
-| `request-review <doc> --file reviewers.json` | ask for an AI review for the author, as the UI's **AI review** button does (also `--reviewer NAME`…, `--note`) |
-| `serve <doc>` | start the UI (run in background; it live-reloads, start it once per document) |
+| `request-review <doc> --file -` | ask for an AI review for the author, as the UI's **AI review** button does; the panel is a JSON array on stdin (also `--reviewer NAME`…, `--note`) |
+| `serve <doc>` | start the UI (run in background; it live-reloads), or print the URL of the server already running for this document |
+| `running` | no `<doc>`. The review UIs running for this session, one `name  url` line each (`--json` for JSON). The user sees the same list under their prompt |
 
-Round states: `preparing` (you work) → `open` (author works) → `submitted` (back to you).
+Round states: `preparing` (you work) → `open` (author works) → `submitted` (back to you) or `approved`
+(closed: the end of the review).
 `add`/`reply` only work while `preparing`. Only the author resolves comments.
 
 ## Start a review (round 1)
@@ -43,18 +49,21 @@ Round states: `preparing` (you work) → `open` (author works) → `submitted` (
 Do this without being asked whenever the description applies, including for a document you wrote yourself
 in this turn. Don't ask "shall I open it in ReWriter?": open it.
 
-1. `status <doc>`. If a review exists, continue from its state rather than starting over. Otherwise
-   `init <doc> --type T`: pick `T` from what the document is (`article`, `spec`, `plan`; anything else gets
+1. `status <doc>`. If a review exists, continue from its state rather than starting over; one that is
+   `approved` is closed: leave it unless the author asks to change the document or to see the review
+   (see "Approved"). Otherwise `init <doc> --type T`: pick `T` from what the document is (`article`, `spec`, `plan`; anything else gets
    the generic reviewers).
 2. `publish <doc>`. Round 1 is always the untouched document: post no comments of your own.
-3. Start `serve <doc>` with `run_in_background` if it isn't already running for this document, and give
-   the user the URL it prints.
+3. Run `serve <doc>` with `run_in_background` and give the user the URL it prints. A document has one
+   server, whichever session started it: if one is already running, `serve` prints `already running` with
+   that URL and exits at once. That is not an error; use the URL.
 4. If the user asked for reviewers in chat, go to "Reviewers asked for in chat" now.
 5. Start `wait <doc>` with `run_in_background`. When it exits, the author has ended the round: go to "Next
-   round" without waiting to be told. If you can't run it in the background, ask the user to tell you when
+   round" (or to "Approved", if they approved) without waiting to be told. If you can't run it in the background, ask the user to tell you when
    they have pressed a button.
 6. Tell the user in one or two lines: the document is open in the browser; comment and press **Submit
-   round** to have you fix things, or press **AI review** to have reviewers read it first.
+   round** to have you fix things, press **AI review** to have reviewers read it first, or press
+   **Approve** when it is good as it stands.
 
 ## Reviewers asked for in chat
 
@@ -66,8 +75,8 @@ never in chat. Do what the **AI review** button does:
 2. Build the panel. `reviewers <doc>` lists who exists. "Default panel" = the `suggested` entries. A role
    that isn't listed is a new reviewer: write its `persona`, a `background` (who they are, what they look
    for) and `focus` bullets from what the user said.
-3. Write `.rewriter/tmp-reviewers.json`, an array of `{ persona, model?, background?, focus? }`, run
-   `request-review <doc> --file .rewriter/tmp-reviewers.json`, delete the file. Only new reviewers need
+3. Pipe the panel, an array of `{ persona, model?, background?, focus? }`, into
+   `request-review <doc> --file -` (heredoc, as shown under "Comment format"). Only new reviewers need
    `background` and `focus`; a reviewer that is already listed is used as listed, whatever else the entry
    says. `model` overrides the reviewer's own model for this round; `"session"` means your
    session's model even when the reviewer has one of its own. For listed reviewers alone, `request-review <doc> --reviewer "Architect" --reviewer "DBA"` is
@@ -77,8 +86,11 @@ never in chat. Do what the **AI review** button does:
 
 ## Next round (the author pressed a button)
 
-1. `status <doc>`. If the round is still `open`, the author hasn't pressed either button yet.
-2. `next <doc>`, then `pending <doc>`. `request.mode` says which of the two the author chose.
+1. `status <doc>`. If the round is still `open`, the author hasn't pressed a button yet. If it is
+   `approved`, the author approved: go to "Approved" instead. If it says the round is held by another
+   Claude session, stop: see "Several Claude sessions".
+2. `next <doc>`, then `pending <doc>`. `request.mode` says which of the two the author chose. If `next`
+   fails with "picked up by another Claude session", that session got there first: stop the same way.
 3. **`fix`** (Submit round): read `request.note` first, it is the author's instruction for this round.
    Then act on each `needsAction` item; its `why` says what it needs:
    - `approved`: apply the fix to the document (follow the author's note if there is one). Reply with
@@ -95,10 +107,35 @@ never in chat. Do what the **AI review** button does:
 4. **`review`** (AI review): don't edit the document and don't reply to anything. `held` counts the
    author's pending items; they wait for the author's next **Submit round**. Run the AI review (below)
    with exactly `request.reviewers`. `request.note` is addressed to the reviewers.
-5. `publish <doc>`. The running UI refreshes by itself (if the server isn't running, start it).
+5. `publish <doc>`. The running UI refreshes by itself. If you're not sure the server is still up, run
+   `serve <doc>` again: it reuses a running one, and a restarted one comes back on the same URL.
 6. Start `wait <doc>` in the background again.
 7. Report in chat. After `fix`: fixed N, accepted N, challenged N (with ids). After `review`: N new
    comments and by which reviewers, plus the author's shortlist (below).
+
+## Approved (the author pressed Approve)
+
+The author accepted the document as it stands. `pending` shows `roundStatus: "approved"` and
+`request.mode: "approve"`; `request.note` is what they wrote, if anything. The review is closed, and its
+UI server stops by itself.
+
+- Do not run `next`, `publish`, `serve` or another `wait`, and do not edit the document. Nothing is fixed
+  after an approval, not even items the author had asked for: `notActedOn` counts what was left open.
+- Report in one line: approved, plus "N open item(s) left as they were" when `notActedOn` is not zero.
+- Then, if the document is a step in work you are doing for the user in this session (you wrote the spec
+  in order to plan it, the plan in order to execute it), carry on with that work: an approved spec is ready
+  to be planned, an approved plan to be executed. If you were only asked to review the document, or the
+  work it belongs to is another session's, report and stop.
+- **Approval given in chat** ("approved", "looks good, ship it" about a document under review): run
+  `approve <doc>`, with their words as `--note` if they said more than that. It needs an `open` round: if
+  the round is `preparing` and yours, `publish` first; if it is `submitted`, run `next` and `publish`
+  first, acting on nothing. Then the same three points apply. A `wait` you started earlier exits at this
+  point, because `approve` ended the round: that is this same approval, not a second one.
+- **An approved document has to change after all** (the author asks): `reopen <doc>`, then do only what
+  the author asked for, `publish`, `serve`, `wait`, as for any round. Items that were open when they
+  approved are not yours to act on now: `pending` lists them as `held`, and they wait for the author's
+  next **Submit round**. Never reopen on your own initiative.
+- `serve` on an approved review shows it read-only. Run it only when the author asks to see the review.
 
 ## AI review
 
@@ -122,7 +159,7 @@ Running them:
     "Review only these passages, changed since the last round: …". If `request.note` is not empty, add
     "The author asks: <note>".
 - Each subagent returns a JSON array of `{severity, quote, body, suggestion?}`. Set `reviewers` to its
-  persona and post via `add --file`.
+  persona and post everything in one `add` call (see "Comment format").
 - **Merge, don't average.** Merge only findings on the same text making the same point. Opposing views
   (one says cut, another says expand) stay as separate comments. Never soften a verdict while merging, and
   never invent findings for a reviewer who returned `[]`.
@@ -140,8 +177,18 @@ Ask the user only if you can't tell what a plan implements or which codebase a s
 
 ## Comment format
 
-`comments.json` is an array. Write it next to the document's state (`.rewriter/tmp-*.json`) and delete it
-after `add`.
+Comments are a JSON array, piped to `add` on stdin. Use a quoted heredoc: the shell then leaves the text
+alone (quotes, backticks, `$`), and no temp file is left for another session to trip over.
+
+```bash
+rewriter add <doc> --file - <<'REWRITER_JSON'
+[
+  { "severity": "MINOR", "reviewers": ["Architect"], "quote": "…", "body": "…" }
+]
+REWRITER_JSON
+```
+
+The array:
 
 ```json
 [
@@ -169,7 +216,7 @@ after `add`.
 - **suggestion** (optional): replacement text for the quote, ready to paste. Omit it when the fix isn't a
   drop-in replacement and describe the fix in the body instead.
 
-`replies.json` is an array too, and is also all-or-nothing:
+Replies go to `reply <doc> --file -` the same way: an array on stdin, also all-or-nothing:
 
 ```json
 [
@@ -202,9 +249,25 @@ with this document only; those stay with the review, as do new reviewers you pas
 When the user asks for a reviewer to be available everywhere, add it to their library file (keep what is
 already in it).
 
+## Several Claude sessions
+
+Any number of sessions can run reviews at the same time, each on its own documents: nothing is shared
+between two documents' reviews. One document has one review, one server and, while a round is `preparing`,
+one session working on it: the session that ran `next` (or `init`, for round 1). The CLI reads your session
+id from the environment; you pass nothing.
+
+- `status` says "held by another Claude session", or `next`, `add`, `reply` or `publish` fails with
+  "another Claude session": that session is doing this round. Stop. Don't edit the document, don't retry,
+  don't start another `wait` for it. Tell the user in one line that the document's review is running in
+  another session.
+- `claim <doc>` takes the round over. Run it only when the user confirms the other session is gone (closed
+  or crashed mid-round), then continue from `status`.
+- Never pick a port or look for a running server yourself: `serve` does both.
+- Send one batch per `add` or `reply` call rather than several calls at once.
+
 ## Rules
 
-- Edit the document only while the round is `preparing` (between `next` and `publish`).
+- Edit the document only while the round is `preparing` (between `next` or `reopen` and `publish`).
 - Never set or fake `resolved`, and never edit `.rewriter/` files directly.
 - Keep replies short. The author reads them in a sidebar.
 - `.rewriter/` is review scaffolding. Don't publish or commit it with the document unless the user wants
@@ -215,7 +278,11 @@ already in it).
 
 Highlights and margin bubbles are coloured by severity (author comments are purple). Clicking either opens
 the comment. The sidebar has filters (severity, reviewer, status; resolved comments are hidden by default).
-To comment, select text, or use the `+` beside a block, or "General comment". The header has two buttons.
+To comment, select text, or use the `+` beside a block, or "General comment". The header has three buttons.
+**Approve** asks for confirmation, warns when open items will not be acted on, then closes the review:
+the page says "Approved" and its tab closes by itself. Where the browser doesn't let a page close its
+tab, the page stays, read-only, and says it can be closed; it no longer updates, because its server has
+stopped.
 **Submit round** opens a dialog with the count of items for Claude and a note. **AI review** opens a
 dialog with a panel of the reviewers that will run (the last panel used on this document is preloaded), a
 library (the author's saved reviewers, then the built-in starters), and an editor for the selected

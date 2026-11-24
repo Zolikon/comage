@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { writeFileSync, readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, realpathSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { basename, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpArticle } from './helpers.mjs';
+import { startServer } from '../lib/server.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'rewriter.mjs');
 const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
@@ -57,4 +59,139 @@ test('cli reply via file', () => {
   assert.equal(JSON.parse(r.stdout)[0].status, 'addressed');
   const r2 = run('reply', dir, 'c1', '--kind', 'reply', '--body', 'more');
   assert.equal(r2.status, 0, r2.stderr);
+});
+
+// ---- parallel sessions ----
+
+const runAsync = (env, ...args) => new Promise((done) => {
+  const p = spawn(process.execPath, [CLI, ...args], { env: { ...process.env, ...env } });
+  let stdout = ''; let stderr = '';
+  p.stdout.on('data', (d) => { stdout += d; });
+  p.stderr.on('data', (d) => { stderr += d; });
+  p.on('close', (status) => done({ status, stdout, stderr }));
+});
+const as = (session) => (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { ...process.env, REWRITER_SESSION: session } });
+
+test('cli: parallel add calls on one document all land, each with its own id', async () => {
+  const dir = tmpArticle();
+  run('init', dir);
+  const n = 16;
+  const results = await Promise.all(Array.from({ length: n }, (_, i) => runAsync({}, 'add', dir, '--severity', 'MINOR', '--body', `b${i}`)));
+  assert.deepEqual(results.map((r) => r.status), Array(n).fill(0), results.map((r) => r.stderr).join(''));
+  const { comments } = JSON.parse(readFileSync(join(dir, '.rewriter', 'review.json'), 'utf8'));
+  assert.equal(comments.length, n);
+  assert.equal(new Set(comments.map((c) => c.id)).size, n);
+  assert.deepEqual(comments.map((c) => c.body).sort(), Array.from({ length: n }, (_, i) => `b${i}`).sort());
+});
+
+test('cli: add reads a batch from stdin with --file -', () => {
+  const dir = tmpArticle();
+  run('init', dir);
+  const r = spawnSync(process.execPath, [CLI, 'add', dir, '--file', '-'], { encoding: 'utf8', input: JSON.stringify([{ severity: 'MINOR', body: 'from stdin' }]) });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout)[0].body, 'from stdin');
+});
+
+test('cli: the session id comes from the environment; a second session is refused until it claims', () => {
+  const dir = tmpArticle();
+  const a = as('session-a'); const b = as('session-b');
+  assert.equal(a('init', dir).status, 0);
+  const refused = b('add', dir, '--severity', 'MINOR', '--body', 'x');
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /another Claude session/);
+  assert.match(b('status', dir).stdout, /another Claude session/);
+  assert.doesNotMatch(a('status', dir).stdout, /another Claude session/);
+  assert.equal(JSON.parse(b('pending', dir).stdout).otherSession, 'session-a');
+  assert.equal(b('claim', dir).status, 0);
+  assert.equal(b('add', dir, '--severity', 'MINOR', '--body', 'x').status, 0);
+  assert.equal(a('publish', dir).status, 1);
+  assert.equal(b('publish', dir).status, 0);
+});
+
+test('cli: of two sessions answering the same submitted round, exactly one gets it', async () => {
+  const dir = tmpArticle();
+  run('init', dir); run('publish', dir);
+  const state = JSON.parse(readFileSync(join(dir, '.rewriter', 'review.json'), 'utf8'));
+  state.rounds[0].status = 'submitted';
+  writeFileSync(join(dir, '.rewriter', 'review.json'), JSON.stringify(state));
+  const [x, y] = await Promise.all([runAsync({ REWRITER_SESSION: 'session-a' }, 'next', dir), runAsync({ REWRITER_SESSION: 'session-b' }, 'next', dir)]);
+  assert.deepEqual([x.status, y.status].sort(), [0, 1]);
+  assert.match(x.status ? x.stderr : y.stderr, /picked up by another Claude session/);
+  assert.equal(JSON.parse(readFileSync(join(dir, '.rewriter', 'review.json'), 'utf8')).rounds.length, 2);
+});
+
+// ---- running: the review UIs of the calling session (what the footer shows) ----
+// The server lives in this process, so the CLI is run without blocking it (runAsync, never spawnSync).
+
+test('running lists this session\'s live servers, as JSON and as lines', async () => {
+  const registry = { REWRITER_RUNNING: mkdtempSync(join(tmpdir(), 'rw-running-')), REWRITER_SESSION: '' };
+  const kept = process.env.REWRITER_RUNNING;
+  process.env.REWRITER_RUNNING = registry.REWRITER_RUNNING;
+  const dir = tmpArticle();
+  run('init', dir);
+  const s = await startServer(dir, { open: false, log: () => {}, session: 'sess-a' });
+  try {
+    const mine = await runAsync({ ...registry, CLAUDE_CODE_SESSION_ID: 'sess-a' }, 'running', '--json');
+    assert.equal(mine.status, 0, mine.stderr);
+    assert.deepEqual(JSON.parse(mine.stdout), [{ name: basename(dir), url: s.url, document: realpathSync(join(dir, 'index.md')) }]);
+    const other = await runAsync({ ...registry, CLAUDE_CODE_SESSION_ID: 'sess-a' }, 'running', '--json', '--session', 'sess-b');
+    assert.equal(other.stdout.trim(), '[]');
+    assert.equal(other.status, 0);
+    const lines = await runAsync({ ...registry, CLAUDE_CODE_SESSION_ID: '' }, 'running', '--session', 'sess-a');
+    assert.equal(lines.stdout, `${basename(dir)}  ${s.url}\n`);
+    const all = await runAsync({ ...registry, CLAUDE_CODE_SESSION_ID: '' }, 'running', '--json');
+    assert.equal(JSON.parse(all.stdout).length, 1, 'no session id: every live server');
+  } finally { await s.close(); process.env.REWRITER_RUNNING = kept; }
+});
+
+test('running with nothing running prints [] or nothing, and exits 0', async () => {
+  const registry = { REWRITER_RUNNING: join(mkdtempSync(join(tmpdir(), 'rw-running-')), 'not-there-yet'), REWRITER_SESSION: '', CLAUDE_CODE_SESSION_ID: 'sess-a' };
+  const json = await runAsync(registry, 'running', '--json');
+  assert.deepEqual([json.status, json.stdout.trim(), json.stderr], [0, '[]', '']);
+  const lines = await runAsync(registry, 'running');
+  assert.deepEqual([lines.status, lines.stdout, lines.stderr], [0, '', '']);
+});
+
+// ---- approve: the third way a round ends ----
+
+test('cli approve closes the review; status and pending say so; reopen starts round 2', () => {
+  const dir = tmpArticle();
+  run('init', dir);
+  run('add', dir, '--severity', 'MINOR', '--body', 'left open', '--quote', 'The cat ran');
+  run('publish', dir);
+  const a = run('approve', dir, '--note', 'good');
+  assert.equal(a.status, 0, a.stderr);
+  const p = JSON.parse(a.stdout);
+  assert.deepEqual([p.roundStatus, p.request.mode, p.request.note, p.notActedOn], ['approved', 'approve', 'good', 1]);
+  const st = run('status', dir).stdout;
+  assert.match(st, /Round 1 \(approved\)/);
+  assert.match(st, /Next: nothing\. The author approved this version; the review is closed\. `reopen` starts a new round if the document has to change\./);
+  assert.match(st, /Left as they were: 1 item\(s\) not acted on\./);
+  const next = run('next', dir);
+  assert.notEqual(next.status, 0);
+  assert.match(next.stderr, /approved and closed/);
+  const r = JSON.parse(as('s1')('reopen', dir).stdout);
+  assert.deepEqual([r.n, r.status, r.session], [2, 'preparing', 's1']);
+  assert.match(as('s1')('status', dir).stdout, /Round 2 \(preparing\)[\s\S]*Reopened after approval\. Next: Claude makes the change, then `publish`\./);
+  assert.notEqual(run('approve', dir).status, 0, 'a round being prepared cannot be approved');
+});
+
+test('cli status on an approved review with nothing left says nothing about leftovers', () => {
+  const dir = tmpArticle();
+  run('init', dir);
+  run('publish', dir);
+  run('approve', dir);
+  assert.doesNotMatch(run('status', dir).stdout, /Left as they were/);
+});
+
+test('wait exits when the author approves', async () => {
+  const dir = tmpArticle();
+  run('init', dir);
+  run('publish', dir);
+  const waiting = runAsync({}, 'wait', dir, '--timeout', '10');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(run('approve', dir).status, 0);
+  const out = await waiting;
+  assert.equal(out.status, 0, out.stderr);
+  assert.equal(JSON.parse(out.stdout).roundStatus, 'approved');
 });

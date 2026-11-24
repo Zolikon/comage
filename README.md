@@ -47,13 +47,40 @@ You rarely need to type that. Claude opens ReWriter on its own after it writes a
 draft for you, or when you ask for a review ("review docs/specs/auth.md", "review it with a DBA and a
 security reviewer").
 
-Each round ends with one of two buttons:
+Each round ends with one of three buttons:
 
 - **Submit round**: Claude acts on your comments and on your decisions about reviewer comments.
 - **AI review**: the reviewers you pick, each on the model you pick, read the document and post their
   findings. Nothing is fixed in that round; your own pending items wait for your next **Submit round**.
+- **Approve**: the document is final as it stands. The review is closed, its server stops, its browser tab
+  closes (where the browser lets a page close its own tab; otherwise the page says it can be closed), and
+  Claude goes on with what the document was for. Anything still open is left as it is (the dialog tells you how much).
+  Ask Claude to reopen the review if the document has to change after all.
 
 Review state is stored next to the document in `.rewriter/`.
+
+## Several sessions at once
+
+The plugin is safe to use from any number of Claude sessions in parallel.
+
+- Each document has its own review state, so sessions working on different documents share nothing.
+- Each document has one UI server. A second session asking for it gets the running server's URL instead
+  of a new one. A server stops by itself after two hours without a browser tab (`serve --idle-minutes N`,
+  `0` = never), or as soon as its review is approved, and comes back on the same URL when it is started
+  again.
+- While Claude works on a round, that round belongs to the session that picked it up. If two sessions
+  watch the same document, one gets the round and the other is told to leave it. `rewriter claim <doc>`
+  hands a round to a new session when the one that held it is gone.
+- Writes to a review are locked, so parallel commands never overwrite each other.
+- The browser tab is named after the Claude session working on the review (`<session title> · <document>`),
+  and follows the session when it is retitled or renamed.
+
+### Footer link
+
+While a review UI that a session opened is running, the plugin shows its address under that session's
+prompt (`ReWriter · auth.md http://127.0.0.1:4870/`), one entry per document. It goes away when the server
+stops, and a session with no review UI shows nothing. `rewriter running` prints the same list. Terminal
+only for now.
 
 ## Reviewers
 

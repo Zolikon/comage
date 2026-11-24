@@ -2,11 +2,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import * as m from '../lib/model.mjs';
-import { listReviewers, removeLibraryReviewer, saveLibraryReviewer } from '../lib/reviewers.mjs';
+import { expandReviewers, listReviewers, removeLibraryReviewer, saveLibraryReviewer } from '../lib/reviewers.mjs';
 import { createHandler } from '../lib/server.mjs';
 
 // Every test gets its own user file; the developer's real one is never touched.
@@ -33,12 +33,61 @@ test('save changes one hand-written entry and nothing else', () => {
     article: [{ persona: 'DBA', background: 'old copy' }],
   };
   const f = userFile(JSON.stringify(before));
-  saveLibraryReviewer({ persona: 'DBA', background: 'new' });
+  saveLibraryReviewer({ persona: 'DBA', background: 'new' }, 'spec');
   const after = read(f);
   assert.deepEqual(after.spec[0], { persona: 'DBA', background: 'new', focus: [], model: '', enabled: true });
   assert.deepEqual(after.spec[1], before.spec[1]);
-  assert.deepEqual(after.article[0], { persona: 'DBA', background: 'new', focus: [], model: '' });
+  assert.deepEqual(after.article, before.article); // the copy for another document type is a different definition
   assert.equal(after.library, undefined);
+});
+
+test('with copies in several profiles, save and remove act on the one in effect for the document type', () => {
+  const f = userFile(JSON.stringify({ spec: [{ persona: 'DBA', background: 'for specs' }], article: [{ persona: 'DBA', background: 'for articles' }] }));
+  const inEffect = (type) => listReviewers({ docType: type }).find((r) => r.persona === 'DBA').background;
+  assert.deepEqual([inEffect('spec'), inEffect('article'), inEffect('plan')], ['for specs', 'for articles', 'for articles']);
+  saveLibraryReviewer({ persona: 'DBA', background: 'new' }, 'spec');
+  assert.deepEqual([inEffect('spec'), inEffect('article')], ['new', 'for articles']);
+  saveLibraryReviewer({ persona: 'DBA', background: 'newer' }, 'plan'); // no copy for plans: the last one is in effect
+  assert.deepEqual([inEffect('spec'), inEffect('article'), inEffect('plan')], ['new', 'newer', 'newer']);
+  removeLibraryReviewer('DBA', 'spec');
+  assert.deepEqual(read(f), { spec: [], article: [{ persona: 'DBA', background: 'newer', focus: [], model: '' }] });
+});
+
+test('saving a disabled entry enables it; a "library" that is not a list is an error', () => {
+  let f = userFile(JSON.stringify({ spec: [{ persona: 'DBA', background: 'old', enabled: false }] }));
+  assert.equal(find('DBA'), undefined);
+  saveLibraryReviewer({ persona: 'DBA', background: 'new' }, 'spec');
+  assert.deepEqual(read(f), { spec: [{ persona: 'DBA', background: 'new', focus: [], model: '' }] });
+  assert.equal(find('DBA').background, 'new');
+  const content = JSON.stringify({ library: { DBA: 'mine' } });
+  f = userFile(content);
+  assert.throws(() => saveLibraryReviewer({ persona: 'X', background: 'x' }), (e) => e.status === 400 && e.message.includes(f));
+  assert.equal(readFileSync(f, 'utf8'), content);
+});
+
+test('a symlinked library file stays a symlink and keeps its mode', () => {
+  const f = userFile();
+  const real = join(dirname(dirname(f)), 'dotfiles-reviewers.json');
+  writeFileSync(real, '{}', { mode: 0o600 });
+  mkdirSync(dirname(f), { recursive: true });
+  symlinkSync(real, f);
+  saveLibraryReviewer({ persona: 'DBA', background: 'x' });
+  assert.ok(lstatSync(f).isSymbolicLink());
+  assert.equal(read(real).library[0].persona, 'DBA');
+  assert.equal(statSync(real).mode & 0o777, 0o600);
+});
+
+test('a reviewer with a default model can be run on the session model', () => {
+  userFile(JSON.stringify({ library: [{ persona: 'DBA', background: 'x', model: 'haiku' }] }));
+  const model = (picked) => expandReviewers({ docType: 'spec' }, [{ persona: 'DBA', model: picked }])[0].model;
+  assert.deepEqual([model(''), model('opus'), model('session')], ['haiku', 'opus', '']);
+  const dir = mkdtempSync(join(tmpdir(), 'rw-'));
+  const spec = join(dir, 'spec.md');
+  writeFileSync(spec, '# Spec\n\nThe service stores widgets.\n');
+  m.init(spec, { type: 'spec' });
+  m.publish(spec);
+  m.submit(spec, { mode: 'review', reviewers: [{ persona: 'DBA', model: 'session' }] });
+  assert.equal(m.pending(spec).request.reviewers[0].model, '');
 });
 
 test('a legacy array file keeps its reviewers', () => {

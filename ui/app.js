@@ -724,7 +724,15 @@ $('#help-btn').addEventListener('click', () => { $('#help').hidden = false; });
 $('#help').addEventListener('click', () => { $('#help').hidden = true; });
 // ---------- ending a round: "Submit round" (Claude fixes) or "AI review" (reviewers read, nothing is fixed) ----------
 const dlg = $('#submit-dlg');
-const closeSubmit = () => { dlg.hidden = true; dlg.replaceChildren(); };
+// A dialog that holds work the author would lose sets dlgGuard: it returns the question to ask before a
+// backdrop click or Escape closes it, or '' when there is nothing to lose.
+let dlgGuard = null;
+const closeSubmit = () => { dlg.hidden = true; dlg.replaceChildren(); dlgGuard = null; };
+function dismissDialog() {
+  const question = dlgGuard?.();
+  if (question && !confirm(question)) return;
+  closeSubmit();
+}
 const modelLabel = (m) => (m || 'session');
 
 // toFix: what Claude would act on after "Submit round". undecided: reviewer comments with no decision yet.
@@ -790,9 +798,12 @@ async function openReviewDialog() {
 
   // panel: [{ persona, model, def }]. def is null for a reviewer used as stored, or { background } for one
   // used with a description that isn't saved anywhere yet.
+  // In a request the model "session" means the session's own model; in here that is the empty model.
   let panel = (reg.last || []).filter((p) => byName(p.persona))
-    .map((p) => ({ persona: p.persona, model: p.model || byName(p.persona).model || '', def: null }));
+    .map((p) => ({ persona: p.persona, model: p.model === 'session' ? '' : (p.model || byName(p.persona).model || ''), def: null }));
   let sel = null; // the editor: { persona, isNew, desc, model }
+  let touched = false; // the author did something here that closing would throw away
+  dlgGuard = () => (touched ? 'Close the AI review dialog? The panel you set up will be lost.' : '');
   const inPanel = (name) => panel.find((p) => p.persona === name);
   const putInPanel = (entry) => {
     const i = panel.findIndex((p) => p.persona === entry.persona);
@@ -822,7 +833,13 @@ async function openReviewDialog() {
   const valid = () => {
     const name = sel.persona.trim();
     if (!name || !sel.desc.trim()) { toast('Give the reviewer a name and a description', true); return false; }
-    if (sel.isNew && byName(name)) { toast(`"${name}" already exists. Opened it.`); openStored(name); return false; }
+    if (sel.isNew && byName(name)) {
+      // Keep what was typed: it becomes an unsaved change to the existing reviewer.
+      toast(`"${name}" already exists. Opened it.`);
+      sel = { persona: name, isNew: false, desc: sel.desc, model: sel.model };
+      draw();
+      return false;
+    }
     return true;
   };
   const use = () => {
@@ -830,6 +847,7 @@ async function openReviewDialog() {
     const name = sel.persona.trim(); const r = byName(name); const desc = sel.desc.trim();
     putInPanel({ persona: name, model: sel.model, def: !r || desc !== storedDesc(r) ? { background: desc } : null });
     sel.persona = name;
+    touched = true;
     draw();
   };
   const save = async () => {
@@ -840,6 +858,7 @@ async function openReviewDialog() {
       reg = await api('GET', '/api/reviewers');
     } catch (e) { toast(e.message, true); return; }
     putInPanel({ persona: name, model, def: null });
+    touched = true;
     sel = { persona: name, isNew: false, desc: storedDesc(byName(name)), model };
     draw();
     toast('Saved to your library');
@@ -868,7 +887,7 @@ async function openReviewDialog() {
     if (r?.source === 'user') actions.append(h('button', { class: 'small ghost rv-remove', onclick: removeFromLibrary }, 'Remove from library'));
   };
   const drawModels = () => models.replaceChildren(...reg.models.map((m) => h('button', {
-    class: m === sel.model ? 'on' : '', onclick: () => { sel.model = m; drawModels(); drawActions(); },
+    class: m === sel.model ? 'on' : '', onclick: () => { sel.model = m; touched = true; drawModels(); drawActions(); },
   }, modelLabel(m))));
   const drawRight = () => {
     if (!sel) { right.replaceChildren(h('p', { class: 'muted' }, 'Select a reviewer to see or edit it, or create a new one.')); return; }
@@ -876,11 +895,11 @@ async function openReviewDialog() {
     if (sel.isNew) {
       head = h('input', { type: 'text', placeholder: 'Name, e.g. Security Reviewer', maxlength: 60 });
       head.value = sel.persona;
-      head.addEventListener('input', () => { sel.persona = head.value; });
+      head.addEventListener('input', () => { sel.persona = head.value; touched = true; });
     } else head = h('div', { class: 'rv-head' }, h('b', {}, sel.persona), h('span', { class: 'rv-tag' }, SOURCE_TAG[byName(sel.persona).source]));
     const desc = h('textarea', { placeholder: 'Who they are and what they look for…' });
     desc.value = sel.desc;
-    desc.addEventListener('input', () => { sel.desc = desc.value; drawActions(); });
+    desc.addEventListener('input', () => { sel.desc = desc.value; touched = true; drawActions(); });
     drawModels(); drawActions();
     right.replaceChildren(head, desc, h('div', { class: 'rv-label' }, 'Model'), models, actions);
     if (sel.isNew && !sel.persona) head.focus();
@@ -892,10 +911,11 @@ async function openReviewDialog() {
       h('div', { class: 'rv-label' }, `Panel (${panel.length})`),
       ...(panel.length ? panel.map((p) => h('div', { class: `rv-item${sel && sel.persona === p.persona ? ' on' : ''}`, onclick: () => openFromPanel(p.persona) },
         h('span', { class: 'rv-name' }, p.persona), h('span', { class: 'rv-tag' }, modelLabel(p.model)),
-        h('button', { class: 'small ghost', title: 'Remove from the panel', onclick: (e) => { e.stopPropagation(); panel = panel.filter((x) => x !== p); draw(); } }, '✕')))
+        h('button', { class: 'small ghost', title: 'Remove from the panel', onclick: (e) => { e.stopPropagation(); panel = panel.filter((x) => x !== p); touched = true; draw(); } }, '✕')))
         : [h('p', { class: 'muted rv-empty' }, 'No reviewers yet. Pick one from the library or create a new one.')]),
       h('div', { class: 'rv-label' }, 'Library'),
-      ...library.map((r) => h('div', { class: `rv-item${on(r.persona)}`, onclick: () => openStored(r.persona) },
+      // A reviewer that is in the panel opens as the panel will run it, wherever it is clicked.
+      ...library.map((r) => h('div', { class: `rv-item${on(r.persona)}`, onclick: () => (inPanel(r.persona) ? openFromPanel(r.persona) : openStored(r.persona)) },
         h('span', { class: 'rv-check' }, inPanel(r.persona) ? '✓' : ''),
         h('span', { class: 'rv-name' }, r.persona), h('span', { class: 'rv-tag' }, SOURCE_TAG[r.source]))),
       h('button', { class: 'small ghost rv-new', onclick: () => { sel = { persona: '', isNew: true, desc: '', model: '' }; draw(); } }, '+ New reviewer'));
@@ -903,13 +923,14 @@ async function openReviewDialog() {
   function draw() { drawLeft(); drawRight(); }
 
   const note = h('textarea', { placeholder: 'Note for the reviewers (optional), e.g. what to focus on…' });
+  note.addEventListener('input', () => { touched = true; });
   const send = sendButton('Start AI review', 'AI review requested', () => {
     if (!panel.length) { toast('Add at least one reviewer to the panel', true); return null; }
     if (unapplied() && !confirm(`"${sel.persona.trim() || 'The new reviewer'}" has changes you have not applied. Start without them?`)) return null;
     return {
       mode: 'review',
       note: note.value.trim(),
-      reviewers: panel.filter((p) => !p.def).map((p) => ({ persona: p.persona, model: p.model })),
+      reviewers: panel.filter((p) => !p.def).map((p) => ({ persona: p.persona, model: p.model || 'session' })),
       custom: panel.filter((p) => p.def).map((p) => ({ persona: p.persona, background: p.def.background, focus: [], model: p.model })),
     };
   });
@@ -925,19 +946,22 @@ async function openReviewDialog() {
 }
 $('#submit-btn').addEventListener('click', openSubmitDialog);
 $('#review-btn').addEventListener('click', openReviewDialog);
-dlg.addEventListener('click', closeSubmit);
+// Close on a click that both starts and ends on the backdrop: a text selection dragged out of the card must not.
+let pressedBackdrop = false;
+dlg.addEventListener('mousedown', (e) => { pressedBackdrop = e.target === dlg; });
+dlg.addEventListener('click', (e) => { if (e.target === dlg && pressedBackdrop) dismissDialog(); });
 
 // ---------- keyboard ----------
 document.addEventListener('keydown', (e) => {
   if (e.target.closest('textarea, input, select') || e.metaKey || e.ctrlKey || e.altKey) {
-    if (e.key === 'Escape' && !dlg.hidden && !e.target.closest('.rv-edit')) closeSubmit();
+    if (e.key === 'Escape' && !dlg.hidden && !e.target.closest('.rv-edit')) dismissDialog();
     return;
   }
   if (!dlg.hidden && e.key !== 'Escape') return;
   const id = ui.selected;
   const c = id && byId(id);
   const k = e.key;
-  if (k === 'Escape') { $('#help').hidden = true; closeSubmit(); closePopover(); if (ui.form) closeForm(); $('#sel-btn').hidden = true; return; }
+  if (k === 'Escape') { $('#help').hidden = true; if (!dlg.hidden) dismissDialog(); closePopover(); if (ui.form) closeForm(); $('#sel-btn').hidden = true; return; }
   if (k === '?') { $('#help').hidden = !$('#help').hidden; return; }
   if (k === 'j') return move(1);
   if (k === 'k') return move(-1);

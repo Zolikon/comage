@@ -183,16 +183,23 @@ the new text after an edit.
 
 ## Reviewers
 
-Built-in profiles live in `${CLAUDE_PLUGIN_ROOT}/reviewers.default.json` (`rewriter reviewers <doc>` lists
-them), keyed by document type (`article`, `spec`, `plan`,
-`generic`). The user's own go in `~/.claude/rewriter/reviewers.json`, same shape, and win on a name clash:
+`rewriter reviewers <doc>` lists every reviewer there is. They come from three places, later ones winning
+on a name clash:
+
+1. Built-in starters in `${CLAUDE_PLUGIN_ROOT}/reviewers.default.json`, keyed by document type (`article`,
+   `spec`, `plan`, `generic`). The type only decides which ones are `suggested` (the "default panel").
+2. The author's library, `~/.claude/rewriter/reviewers.json`: same shape, any keys. The UI saves under
+   `library`.
+3. Reviewers kept with this review only.
 
 ```json
-{ "spec": [{ "persona": "DBA", "background": "Owns the production database…", "focus": ["Migrations", "Query cost"], "model": "sonnet" }] }
+{ "library": [{ "persona": "DBA", "background": "Owns the production database…", "focus": ["Migrations", "Query cost"], "model": "sonnet" }] }
 ```
 
-Reviewers the author defines in the AI review dialog (or you pass to `request-review` with a `background`) are saved with that review and can be picked again in
-later rounds. When the user asks for a reviewer to be available everywhere, add it to their file.
+In the AI review dialog the author can save a reviewer, or a change to one, to their library, or use it
+with this document only; those stay with the review, as do new reviewers you pass to `request-review`.
+When the user asks for a reviewer to be available everywhere, add it to their library file (keep what is
+already in it).
 
 ## Rules
 
@@ -209,10 +216,11 @@ Highlights and margin bubbles are coloured by severity (author comments are purp
 the comment. The sidebar has filters (severity, reviewer, status; resolved comments are hidden by default).
 To comment, select text, or use the `+` beside a block, or "General comment". The header has two buttons.
 **Submit round** opens a dialog with the count of items for Claude and a note. **AI review** opens a
-dialog with a checklist of reviewers (grouped by profile, last panel preselected), a model per reviewer,
-"+ New reviewer", and a note for the reviewers. The author can delete an own comment until Claude has
-answered it. The "Changes since round
-N" toggle shows inserted text in green and removals as red markers. Earlier rounds can be viewed read-only.
+dialog with a panel of the reviewers that will run (the last panel used on this document is preloaded), a
+library (the author's saved reviewers, then the built-in starters), and an editor for the selected
+reviewer: its description, its model, and buttons to use it as is or to save the change to the library.
+The author can delete an own comment until Claude has answered it. The "Changes since round N" toggle
+shows inserted text in green and removals as red markers. Earlier rounds can be viewed read-only.
 Keys: `j/k` move, `a/A` approve (with comment), `d/D` decline (with comment), `i` ignore, `u` undo,
 `r` resolve/reopen, `R` reply, `y` copy suggestion, `c` comment on selection, `f` toggle changes, `?` help.
 Ignore means "won't act": it resolves the comment and needs no reply from you.

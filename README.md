@@ -57,14 +57,20 @@ Review state is stored next to the document in `.rewriter/`.
 
 ## Reviewers
 
-Built-in panels per document type are in `reviewers.default.json` (`article`, `spec`, `plan`, `generic`).
-Add your own in `~/.claude/rewriter/reviewers.json`, same shape:
+The **AI review** dialog shows one library: your saved reviewers first, then the built-in starters. Select
+one to read or edit its description and pick its model, then add it to the panel. A new reviewer, or a
+change to an existing one, can be saved to your library (**Save & use**, **Update & use**) or kept with
+this document only (**Use once**, **Use without updating**).
+
+Your library is `~/.claude/rewriter/reviewers.json`, shared by every document and project. You can also
+edit it by hand:
 
 ```json
-{ "spec": [{ "persona": "DBA", "background": "Owns the production database.", "focus": ["Migrations", "Query cost"], "model": "sonnet" }] }
+{ "library": [{ "persona": "DBA", "background": "Owns the production database. Looks at migrations and query cost.", "model": "sonnet" }] }
 ```
 
-Reviewers created in the AI review dialog are saved with that review and can be reused in later rounds.
+The starters are in `reviewers.default.json`, grouped by document type. That grouping only matters when you
+ask Claude in chat for "the default panel".
 
 ## Layout
 

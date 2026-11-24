@@ -716,7 +716,7 @@ $('#help').addEventListener('click', () => { $('#help').hidden = true; });
 // ---------- ending a round: "Submit round" (Claude fixes) or "AI review" (reviewers read, nothing is fixed) ----------
 const dlg = $('#submit-dlg');
 const closeSubmit = () => { dlg.hidden = true; dlg.replaceChildren(); };
-const modelLabel = (m) => (m || 'session model');
+const modelLabel = (m) => (m || 'session');
 
 // toFix: what Claude would act on after "Submit round". undecided: reviewer comments with no decision yet.
 function pendingCounts() {
@@ -764,74 +764,155 @@ function openSubmitDialog() {
     h('div', { class: 'row' }, h('button', { onclick: closeSubmit }, 'Cancel'), send));
 }
 
+// The AI review dialog is a small workbench: the panel (who runs), the library (who exists) and an editor
+// for the selected reviewer. Reviewers can be saved to the author's library or used with this document only.
+const SOURCE_TAG = { review: 'this document', user: 'yours', 'built-in': 'starter' };
+const SOURCE_ORDER = ['review', 'user', 'built-in'];
+// What the editor shows for a stored reviewer: its background, then its focus points as bullets.
+const storedDesc = (r) => [r.background, ...(r.focus || []).map((f) => `- ${f}`)].join('\n').trim();
+
 async function openReviewDialog() {
   if (readOnly()) return;
   let reg;
   try { reg = await api('GET', '/api/reviewers'); } catch (e) { toast(e.message, true); return; }
   closePopover(); ui.form = null;
   const { toFix } = pendingCounts();
-  // Start from the previous AI review's panel; the first time, from the reviewers meant for this document type.
-  const lastPick = new Map((reg.last || []).map((r) => [r.persona, r.model || '']));
-  const st = { rows: reg.reviewers.map((r) => ({
-    ...r, on: reg.last ? lastPick.has(r.persona) : r.suggested, model: lastPick.get(r.persona) || r.model || '', isNew: false,
-  })) };
+  const byName = (name) => reg.reviewers.find((r) => r.persona === name);
 
-  const list = h('div', { class: 'rv-list' });
-  const modelSelect = (value, onchange) => {
-    const sel = h('select', { title: 'Model this reviewer runs on' },
-      [...new Set([...reg.models, value])].map((m) => h('option', { value: m, selected: m === value }, modelLabel(m))));
-    sel.addEventListener('change', () => onchange(sel.value));
-    return sel;
+  // panel: [{ persona, model, def }]. def is null for a reviewer used as stored, or { background } for one
+  // used with a description that isn't saved anywhere yet.
+  let panel = (reg.last || []).filter((p) => byName(p.persona))
+    .map((p) => ({ persona: p.persona, model: p.model || byName(p.persona).model || '', def: null }));
+  let sel = null; // the editor: { persona, isNew, desc, model }
+  const inPanel = (name) => panel.find((p) => p.persona === name);
+  const putInPanel = (entry) => {
+    const i = panel.findIndex((p) => p.persona === entry.persona);
+    if (i < 0) panel.push(entry); else panel[i] = entry;
   };
-  const drawRows = () => {
-    const groups = [...new Set(st.rows.map((r) => r.profile))]
-      .sort((a, b) => Number(st.rows.some((r) => r.profile === b && r.suggested)) - Number(st.rows.some((r) => r.profile === a && r.suggested)));
-    list.replaceChildren(...groups.flatMap((g) => [
-      h('div', { class: 'rv-group' }, g === 'custom' ? 'yours' : g),
-      ...st.rows.filter((r) => r.profile === g).map((r) => {
-        const cb = h('input', { type: 'checkbox', checked: r.on });
-        cb.addEventListener('change', () => { r.on = cb.checked; });
-        return h('label', { class: 'rv-row', title: [r.background, ...r.focus.map((f) => `• ${f}`)].join('\n') },
-          cb, h('span', { class: 'rv-name' }, r.persona), modelSelect(r.model, (m) => { r.model = m; }));
-      }),
-    ]));
+
+  const left = h('div', { class: 'rv-left' });
+  const right = h('div', { class: 'rv-edit' });
+  const actions = h('div', { class: 'rv-actions' });
+  const models = h('div', { class: 'rv-models' });
+
+  const openStored = (name) => { const r = byName(name); sel = { persona: name, isNew: false, desc: storedDesc(r), model: r.model || '' }; draw(); };
+  const openFromPanel = (name) => {
+    const p = inPanel(name); const r = byName(name);
+    sel = { persona: name, isNew: !r, desc: p.def ? p.def.background : storedDesc(r), model: p.model };
+    draw();
   };
-  drawRows();
+  // Does the editor hold something the panel wouldn't run as shown?
+  const unapplied = () => {
+    if (!sel) return false;
+    const name = sel.persona.trim(); const p = inPanel(name); const r = byName(name);
+    if (!p && !r) return Boolean(name || sel.desc.trim());
+    const desc = p?.def ? p.def.background : storedDesc(r);
+    const model = p ? p.model : (r.model || '');
+    return sel.desc.trim() !== desc || sel.model !== model;
+  };
+  const valid = () => {
+    const name = sel.persona.trim();
+    if (!name || !sel.desc.trim()) { toast('Give the reviewer a name and a description', true); return false; }
+    if (sel.isNew && byName(name)) { toast(`"${name}" already exists. Opened it.`); openStored(name); return false; }
+    return true;
+  };
+  const use = () => {
+    if (!valid()) return;
+    const name = sel.persona.trim(); const r = byName(name); const desc = sel.desc.trim();
+    putInPanel({ persona: name, model: sel.model, def: !r || desc !== storedDesc(r) ? { background: desc } : null });
+    sel.persona = name;
+    draw();
+  };
+  const save = async () => {
+    if (!valid()) return;
+    const name = sel.persona.trim(); const { model } = sel;
+    try {
+      await api('PUT', '/api/reviewers', { persona: name, background: sel.desc.trim(), model });
+      reg = await api('GET', '/api/reviewers');
+    } catch (e) { toast(e.message, true); return; }
+    putInPanel({ persona: name, model, def: null });
+    sel = { persona: name, isNew: false, desc: storedDesc(byName(name)), model };
+    draw();
+    toast('Saved to your library');
+  };
+  const removeFromLibrary = async () => {
+    const name = sel.persona;
+    if (!confirm(`Remove "${name}" from your library?`)) return;
+    try {
+      await api('DELETE', `/api/reviewers/${encodeURIComponent(name)}`);
+      reg = await api('GET', '/api/reviewers');
+    } catch (e) { toast(e.message, true); return; }
+    if (byName(name)) openStored(name); // a starter of that name is back
+    else { panel = panel.filter((p) => p.persona !== name); sel = null; draw(); }
+    toast('Removed from your library');
+  };
 
-  const nName = h('input', { type: 'text', placeholder: 'Name, e.g. Security Reviewer', maxlength: 60 });
-  const nDesc = h('textarea', { placeholder: 'Who they are and what they look for…' });
-  let nModel = '';
-  const addForm = h('div', { class: 'rv-add', hidden: true }, nName, nDesc, h('div', { class: 'row' },
-    modelSelect('', (m) => { nModel = m; }),
-    h('button', { class: 'small', onclick: () => { addForm.hidden = true; } }, 'Cancel'),
-    h('button', { class: 'small primary', onclick: () => {
-      const persona = nName.value.trim(); const background = nDesc.value.trim();
-      if (!persona || !background) { toast('Give the reviewer a name and a description', true); return; }
-      st.rows = st.rows.filter((r) => r.persona !== persona);
-      st.rows.push({ persona, background, focus: [], model: nModel, profile: 'custom', on: true, isNew: true });
-      nName.value = ''; nDesc.value = ''; addForm.hidden = true; drawRows();
-    } }, 'Add reviewer')));
+  const drawActions = () => {
+    const r = sel.isNew ? null : byName(sel.persona);
+    const dirty = Boolean(r) && (sel.desc.trim() !== storedDesc(r) || sel.model !== (r.model || ''));
+    let btns;
+    if (!r) btns = [['Save & use', save, true], ['Use once', use]];
+    else if (r.source === 'review') btns = [['Save & use', save], ['Use', use, true]];
+    else if (dirty) btns = [['Update & use', save, true], ['Use without updating', use]];
+    else btns = [['Use', use, true]];
+    actions.replaceChildren(...btns.map(([label, fn, primary]) => h('button', { class: primary ? 'primary' : '', onclick: fn }, label)));
+    if (r?.source === 'user') actions.append(h('button', { class: 'small ghost rv-remove', onclick: removeFromLibrary }, 'Remove from library'));
+  };
+  const drawModels = () => models.replaceChildren(...reg.models.map((m) => h('button', {
+    class: m === sel.model ? 'on' : '', onclick: () => { sel.model = m; drawModels(); drawActions(); },
+  }, modelLabel(m))));
+  const drawRight = () => {
+    if (!sel) { right.replaceChildren(h('p', { class: 'muted' }, 'Select a reviewer to see or edit it, or create a new one.')); return; }
+    let head;
+    if (sel.isNew) {
+      head = h('input', { type: 'text', placeholder: 'Name, e.g. Security Reviewer', maxlength: 60 });
+      head.value = sel.persona;
+      head.addEventListener('input', () => { sel.persona = head.value; });
+    } else head = h('div', { class: 'rv-head' }, h('b', {}, sel.persona), h('span', { class: 'rv-tag' }, SOURCE_TAG[byName(sel.persona).source]));
+    const desc = h('textarea', { placeholder: 'Who they are and what they look for…' });
+    desc.value = sel.desc;
+    desc.addEventListener('input', () => { sel.desc = desc.value; drawActions(); });
+    drawModels(); drawActions();
+    right.replaceChildren(head, desc, h('div', { class: 'rv-label' }, 'Model'), models, actions);
+    if (sel.isNew && !sel.persona) head.focus();
+  };
+  const drawLeft = () => {
+    const library = [...reg.reviewers].sort((a, b) => SOURCE_ORDER.indexOf(a.source) - SOURCE_ORDER.indexOf(b.source) || a.persona.localeCompare(b.persona));
+    const on = (name) => (sel && !sel.isNew && sel.persona === name ? ' on' : '');
+    left.replaceChildren(
+      h('div', { class: 'rv-label' }, `Panel (${panel.length})`),
+      ...(panel.length ? panel.map((p) => h('div', { class: `rv-item${sel && sel.persona === p.persona ? ' on' : ''}`, onclick: () => openFromPanel(p.persona) },
+        h('span', { class: 'rv-name' }, p.persona), h('span', { class: 'rv-tag' }, modelLabel(p.model)),
+        h('button', { class: 'small ghost', title: 'Remove from the panel', onclick: (e) => { e.stopPropagation(); panel = panel.filter((x) => x !== p); draw(); } }, '✕')))
+        : [h('p', { class: 'muted rv-empty' }, 'No reviewers yet. Pick one from the library or create a new one.')]),
+      h('div', { class: 'rv-label' }, 'Library'),
+      ...library.map((r) => h('div', { class: `rv-item${on(r.persona)}`, onclick: () => openStored(r.persona) },
+        h('span', { class: 'rv-check' }, inPanel(r.persona) ? '✓' : ''),
+        h('span', { class: 'rv-name' }, r.persona), h('span', { class: 'rv-tag' }, SOURCE_TAG[r.source]))),
+      h('button', { class: 'small ghost rv-new', onclick: () => { sel = { persona: '', isNew: true, desc: '', model: '' }; draw(); } }, '+ New reviewer'));
+  };
+  function draw() { drawLeft(); drawRight(); }
 
-  const panel = h('div', { class: 'rv-panel' }, list,
-    h('button', { class: 'small ghost', onclick: () => { addForm.hidden = false; nName.focus(); } }, '+ New reviewer'), addForm);
   const note = h('textarea', { placeholder: 'Note for the reviewers (optional), e.g. what to focus on…' });
   const send = sendButton('Start AI review', 'AI review requested', () => {
-    const on = st.rows.filter((r) => r.on);
-    if (!on.length) { toast('Pick at least one reviewer', true); return null; }
+    if (!panel.length) { toast('Add at least one reviewer to the panel', true); return null; }
+    if (unapplied() && !confirm(`"${sel.persona.trim() || 'The new reviewer'}" has changes you have not applied. Start without them?`)) return null;
     return {
       mode: 'review',
       note: note.value.trim(),
-      reviewers: on.filter((r) => !r.isNew).map((r) => ({ persona: r.persona, model: r.model })),
-      custom: on.filter((r) => r.isNew).map((r) => ({ persona: r.persona, background: r.background, focus: r.focus, model: r.model })),
+      reviewers: panel.filter((p) => !p.def).map((p) => ({ persona: p.persona, model: p.model })),
+      custom: panel.filter((p) => p.def).map((p) => ({ persona: p.persona, background: p.def.background, focus: [], model: p.model })),
     };
   });
 
+  draw();
   showDialog(
     h('h3', {}, 'AI review'),
-    h('p', { class: 'muted' }, 'The reviewers you pick read the document as it is now. Their findings arrive as comments in the next round.'),
+    h('p', { class: 'muted' }, 'The reviewers in the panel read the document as it is now. Their findings arrive as comments in the next round.'),
     toFix ? h('p', { class: 'muted' }, `Your ${toFix} pending item(s) stay as they are until you press Submit round.`) : null,
-    panel, note,
+    h('div', { class: 'rv-panes' }, left, right), note,
     h('div', { class: 'row' }, h('button', { onclick: closeSubmit }, 'Cancel'), send));
+  dlg.firstChild.classList.add('wide');
 }
 $('#submit-btn').addEventListener('click', openSubmitDialog);
 $('#review-btn').addEventListener('click', openReviewDialog);
@@ -840,7 +921,7 @@ dlg.addEventListener('click', closeSubmit);
 // ---------- keyboard ----------
 document.addEventListener('keydown', (e) => {
   if (e.target.closest('textarea, input, select') || e.metaKey || e.ctrlKey || e.altKey) {
-    if (e.key === 'Escape' && !dlg.hidden && !e.target.closest('.rv-add')) closeSubmit();
+    if (e.key === 'Escape' && !dlg.hidden && !e.target.closest('.rv-edit')) closeSubmit();
     return;
   }
   if (!dlg.hidden && e.key !== 'Escape') return;

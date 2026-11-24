@@ -290,3 +290,25 @@ test('cli: request-review does what the AI review button does', () => {
   assert.doesNotMatch(st, /Held for the author/);
   assert.match(run('help').stdout, /request-review/);
 });
+
+test('cli: request-review uses listed reviewers as listed, even when the file repeats their definition', () => {
+  const dir = tmpDocs();
+  const spec = join(dir, 'spec.md');
+  const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
+  run('init', spec, '--type', 'spec');
+  run('publish', spec);
+  // What Claude gets from `reviewers` for "run the default panel": full definitions, background included.
+  const suggested = JSON.parse(run('reviewers', spec).stdout).filter((r) => r.suggested);
+  assert.deepEqual(suggested.map((r) => r.persona), ['Architect', 'Implementer', 'Test Engineer', 'Scope Skeptic']);
+  suggested[0].model = 'opus';
+  const file = join(dir, 'reviewers.json');
+  writeFileSync(file, JSON.stringify([...suggested, { persona: 'DBA', background: 'Owns the production database.' }]));
+  const ok = run('request-review', spec, '--file', file);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.deepEqual(JSON.parse(ok.stdout).request.reviewers.map((r) => [r.persona, r.profile, r.model]), [
+    ['Architect', 'spec', 'opus'], ['Implementer', 'spec', ''], ['Test Engineer', 'spec', ''], ['Scope Skeptic', 'spec', ''], ['DBA', 'custom', ''],
+  ]);
+  assert.deepEqual(m.load(spec).customReviewers.map((r) => r.persona), ['DBA']);
+  const after = JSON.parse(run('reviewers', spec).stdout).filter((r) => r.suggested).map((r) => r.persona);
+  assert.deepEqual(after, ['Architect', 'Implementer', 'Test Engineer', 'Scope Skeptic']);
+});

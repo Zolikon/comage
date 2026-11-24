@@ -66,11 +66,13 @@ never in chat. Do what the **AI review** button does:
 2. Build the panel. `reviewers <doc>` lists who exists. "Default panel" = the `suggested` entries. A role
    that isn't listed is a new reviewer: write its `persona`, a `background` (who they are, what they look
    for) and `focus` bullets from what the user said.
-3. Write `.rewriter/tmp-reviewers.json`, an array of `{ persona, model?, background?, focus? }` (only new
-   reviewers need `background`), run `request-review <doc> --file .rewriter/tmp-reviewers.json`, delete
-   the file. For listed reviewers alone, `request-review <doc> --reviewer "Architect" --reviewer "DBA"`
-   is enough.
-4. Continue with "Next round".
+3. Write `.rewriter/tmp-reviewers.json`, an array of `{ persona, model?, background?, focus? }`, run
+   `request-review <doc> --file .rewriter/tmp-reviewers.json`, delete the file. Only new reviewers need
+   `background` and `focus`; a reviewer that is already listed is used as listed, whatever else the entry
+   says. For listed reviewers alone, `request-review <doc> --reviewer "Architect" --reviewer "DBA"` is
+   enough.
+4. Continue with "Next round", once. A `wait` you started earlier exits at this point, because
+   `request-review` ended the round: that is this same request, not a second one.
 
 ## Next round (the author pressed a button)
 

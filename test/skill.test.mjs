@@ -26,6 +26,8 @@ test('every command in the skill table exists in the CLI, and the flow uses requ
   for (const c of commands) assert.match(help, new RegExp(`^  ${c}\\b`, 'm'), `skill documents "${c}", CLI help does not`);
   assert.match(skill, /request\.mode/);
   assert.doesNotMatch(skill, /Fix, then AI review|request\.aiReview/);
+  // request-review ends the round, so a `wait` started earlier fires: the skill must say that is not a second request
+  assert.match(skill, /`wait` you started earlier exits/);
 });
 
 test('plugin and package versions match', () => {

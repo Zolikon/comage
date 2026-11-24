@@ -94,12 +94,16 @@ async function main() {
     }
     case 'reviewers': out(listReviewers(m.load(dir))); break;
     case 'request-review': {
-      // Entries with a background are new reviewers (saved with the review); the rest are looked up by name.
+      // An entry with a background whose name isn't listed yet is a new reviewer (saved with the review).
+      // Everything else is looked up by name: a listed reviewer stays as listed even if the file repeats
+      // its definition, which is what `reviewers` output pasted back in looks like.
       const fromFile = flags.file ? readJsonFile(flags.file) : [];
+      const listed = new Set(listReviewers(m.load(dir)).map((r) => r.persona));
+      const isNew = (x) => Boolean(x?.background) && !listed.has(String(x.persona || '').trim());
       m.submit(dir, {
         mode: 'review',
-        reviewers: [...fromFile.filter((x) => !x?.background), ...flags.reviewer.map((persona) => ({ persona }))],
-        custom: fromFile.filter((x) => x?.background),
+        reviewers: [...fromFile.filter((x) => !isNew(x)), ...flags.reviewer.map((persona) => ({ persona }))],
+        custom: fromFile.filter(isNew),
         note: flags.note,
       });
       out(m.pending(dir));

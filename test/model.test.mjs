@@ -178,7 +178,7 @@ test('user reply on addressed comment reopens it; resolve/reopen', () => {
   assert.equal(m.load(dir).comments[0].status, 'open');
 });
 
-test('user can delete own comment from current round only', () => {
+test('user can delete own comment, not a reviewer comment', () => {
   const { dir, created: [c] } = opened();
   const u = m.userComment(dir, { anchor: { kind: 'article' }, body: 'mine' });
   assert.equal(u.author, 'user');

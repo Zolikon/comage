@@ -23,7 +23,8 @@
   <div class="head-right">
     <div class="counts" id="counts"></div>
     <button id="help-btn" class="ghost" title="Keyboard shortcuts (?)">?</button>
-    <button id="submit-btn" class="primary">Submit round</button>
+    <button id="review-btn" title="Have reviewers read the document. Nothing is fixed; your pending items wait.">AI review</button>
+    <button id="submit-btn" class="primary" title="Hand your comments and decisions to Claude to fix">Submit round</button>
   </div>
 </header>
 <div id="banner" hidden></div>
@@ -70,7 +71,7 @@
       <tr><td><kbd>f</kbd></td><td>Toggle changes since last round</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>Close popover / form</td></tr>
     </table>
-    <p class="muted">Every action autosaves. "Submit round" hands the round back to Claude:<br>fixes only, or fixes plus an AI review by the reviewers you pick.</p>
+    <p class="muted">Every action autosaves. A round ends in one of two ways:<br><b>Submit round</b> hands your comments and decisions to Claude to fix.<br><b>AI review</b> has the reviewers you pick read the document; your pending items wait.</p>
   </div>
 </div>
 <div id="submit-dlg" hidden></div>

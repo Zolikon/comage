@@ -34,6 +34,9 @@ const latest = () => ui.data.review.rounds[ui.data.review.rounds.length - 1];
 const viewedRound = () => ui.viewRound ?? latest().n;
 const isPast = () => ui.viewRound !== null && ui.viewRound !== latest().n;
 const readOnly = () => isPast() || latest().status !== 'open';
+// Which outcome a round's request asked for; requests from before modes existed only have aiReview.
+const reqMode = (rq) => rq?.mode || (rq?.aiReview ? 'review' : 'fix');
+const names = (rq) => rq.reviewers.map((r) => r.persona).join(', ');
 const byId = (id) => ui.data.review.comments.find((c) => c.id === id);
 
 async function api(method, path, body) {
@@ -212,19 +215,26 @@ function render() {
     return h('span', { class: `pill sev sev-${s}${n ? '' : ' zero'}`, title: `${n} unresolved ${s === 'USER' ? 'from you' : s}` }, `${s === 'USER' ? 'You' : s} ${n}`);
   }));
   $('#submit-btn').disabled = readOnly();
+  $('#review-btn').disabled = readOnly();
 
   const banner = $('#banner');
+  const prev = review.rounds[review.rounds.length - 2]; // the round whose request Claude is working on
   let msg = '';
+  let info = false;
   if (ui.view?.error) msg = `Document could not be loaded: ${ui.view.error}`;
   else if (isPast()) msg = `Viewing the round ${ui.viewRound} snapshot (read-only). Comments show their current status.`;
-  else if (L.status === 'preparing') msg = `Claude is preparing round ${L.n}. Read-only until it publishes.`;
-  else if (L.status === 'submitted') {
-    const rq = L.request;
-    const asked = rq?.aiReview ? `Asked for fixes plus an AI review by ${rq.reviewers.map((r) => r.persona).join(', ')}.` : 'Asked for fixes only.';
-    msg = `Round ${L.n} submitted. ${asked} Claude picks it up if it is waiting; otherwise tell it to continue.`;
+  else if (L.status === 'preparing') {
+    info = reqMode(prev?.request) === 'review';
+    msg = info ? `AI review running: ${names(prev.request)}. Findings appear here when they are done.`
+      : `Claude is preparing round ${L.n}. Read-only until it publishes.`;
+  } else if (L.status === 'submitted') {
+    info = true;
+    const pickup = 'Claude picks it up if it is waiting; otherwise tell it to continue.';
+    msg = reqMode(L.request) === 'review' ? `AI review requested: ${names(L.request)}. ${pickup}`
+      : `Round ${L.n} submitted. Asked for fixes only. ${pickup}`;
   }
   banner.hidden = !msg; banner.textContent = msg;
-  banner.className = L.status === 'submitted' && !isPast() ? 'info' : '';
+  banner.className = info ? 'info' : '';
 
   renderChips();
   renderDoc();
@@ -410,7 +420,7 @@ function renderCard(c, where) {
       btn('Reply', '', () => openForm(c.id, 'reply'), 'R');
       btn('Resolve', '', () => act(() => api('POST', `/api/comments/${c.id}/resolve`), 'Resolved'), 'r');
     } else btn('Reopen', '', () => act(() => api('POST', `/api/comments/${c.id}/reopen`)), 'r');
-    if (c.author === 'user' && c.round === latest().n && !c.thread.some((t) => t.author === 'ai')) {
+    if (c.author === 'user' && !c.thread.some((t) => t.author === 'ai')) {
       btn('Delete', 'decline', () => { if (confirm('Delete this comment?')) act(() => api('DELETE', `/api/comments/${c.id}`)); });
     }
     card.append(acts);
@@ -703,23 +713,66 @@ $('#reviewer-filter').addEventListener('change', (e) => { ui.reviewer = e.target
 $('#new-general').addEventListener('click', (e) => newComment({ kind: 'article' }, e.target.getBoundingClientRect()));
 $('#help-btn').addEventListener('click', () => { $('#help').hidden = false; });
 $('#help').addEventListener('click', () => { $('#help').hidden = true; });
-// ---------- submit dialog: fixes only, or fixes plus an AI review by chosen reviewers ----------
+// ---------- ending a round: "Submit round" (Claude fixes) or "AI review" (reviewers read, nothing is fixed) ----------
 const dlg = $('#submit-dlg');
 const closeSubmit = () => { dlg.hidden = true; dlg.replaceChildren(); };
 const modelLabel = (m) => (m || 'session model');
 
-async function openSubmit() {
+// toFix: what Claude would act on after "Submit round". undecided: reviewer comments with no decision yet.
+function pendingCounts() {
+  const cs = ui.data.review.comments;
+  return {
+    undecided: cs.filter((c) => c.author === 'ai' && c.status === 'open' && !c.decision).length,
+    toFix: cs.filter((c) => c.status !== 'resolved' && (c.decision?.type === 'approve' || c.decision?.type === 'decline'
+      || (c.author === 'user' && !c.thread.some((t) => t.author === 'ai')) || c.thread[c.thread.length - 1]?.author === 'user')).length,
+  };
+}
+
+function showDialog(...children) {
+  dlg.replaceChildren(h('div', { class: 'help-card submit-card', onclick: (e) => e.stopPropagation() }, ...children));
+  dlg.hidden = false;
+}
+
+// Posts the request that ends the round; `body` is a function so it is read at click time.
+function sendButton(label, done, body) {
+  const send = h('button', { class: 'primary', onclick: async () => {
+    const payload = body();
+    if (!payload) return;
+    send.disabled = true;
+    try { await api('POST', '/api/submit', payload); } catch (e) { toast(e.message, true); send.disabled = false; return; }
+    closeSubmit();
+    toast(done);
+    await load();
+  } }, label);
+  return send;
+}
+
+function openSubmitDialog() {
+  if (readOnly()) return;
+  closePopover(); ui.form = null;
+  const { toFix, undecided } = pendingCounts();
+  const note = h('textarea', { placeholder: 'Note for Claude about this round (optional)…' });
+  const send = sendButton('Submit round', 'Round submitted', () => ({ mode: 'fix', note: note.value.trim() }));
+  const gate = () => { send.disabled = toFix === 0 && !note.value.trim(); };
+  note.addEventListener('input', gate);
+  gate();
+  showDialog(
+    h('h3', {}, `Submit round ${latest().n}`),
+    h('p', { class: 'muted' }, `${toFix} item(s) for Claude to act on.${undecided ? ` ${undecided} reviewer comment(s) have no decision and carry over.` : ''}`),
+    toFix ? null : h('p', { class: 'muted' }, 'Nothing for Claude to act on yet: comment, decide on a reviewer comment, or write a note below.'),
+    note,
+    h('div', { class: 'row' }, h('button', { onclick: closeSubmit }, 'Cancel'), send));
+}
+
+async function openReviewDialog() {
   if (readOnly()) return;
   let reg;
   try { reg = await api('GET', '/api/reviewers'); } catch (e) { toast(e.message, true); return; }
   closePopover(); ui.form = null;
-  const cs = ui.data.review.comments;
-  const undecided = cs.filter((c) => c.author === 'ai' && c.status === 'open' && !c.decision).length;
-  const toFix = cs.filter((c) => c.status !== 'resolved' && (c.decision?.type === 'approve' || c.decision?.type === 'decline'
-    || (c.author === 'user' && !c.thread.some((t) => t.author === 'ai')) || c.thread[c.thread.length - 1]?.author === 'user')).length;
-  // Start from the previous AI round's panel; the first time, from the reviewers meant for this document type.
+  const { toFix } = pendingCounts();
+  // Start from the previous AI review's panel; the first time, from the reviewers meant for this document type.
   const lastPick = new Map((reg.last || []).map((r) => [r.persona, r.model || '']));
-  const st = { ai: false, note: '', rows: reg.reviewers.map((r) => ({
+  const st = { rows: reg.reviewers.map((r) => ({
     ...r, on: reg.last ? lastPick.has(r.persona) : r.suggested, model: lastPick.get(r.persona) || r.model || '', isNew: false,
   })) };
 
@@ -759,39 +812,29 @@ async function openSubmit() {
       nName.value = ''; nDesc.value = ''; addForm.hidden = true; drawRows();
     } }, 'Add reviewer')));
 
-  const panel = h('div', { class: 'rv-panel', hidden: true }, list,
+  const panel = h('div', { class: 'rv-panel' }, list,
     h('button', { class: 'small ghost', onclick: () => { addForm.hidden = false; nName.focus(); } }, '+ New reviewer'), addForm);
-  const radio = (ai, title, sub) => {
-    const input = h('input', { type: 'radio', name: 'rw-mode', checked: st.ai === ai });
-    input.addEventListener('change', () => { st.ai = ai; panel.hidden = !ai; });
-    return h('label', { class: 'mode' }, input, h('span', {}, h('b', {}, title), h('span', { class: 'muted' }, sub)));
-  };
-  const note = h('textarea', { placeholder: 'Note for Claude about this round (optional)…' });
-  const send = h('button', { class: 'primary', onclick: async () => {
+  const note = h('textarea', { placeholder: 'Note for the reviewers (optional), e.g. what to focus on…' });
+  const send = sendButton('Start AI review', 'AI review requested', () => {
     const on = st.rows.filter((r) => r.on);
-    if (st.ai && !on.length) { toast('Pick at least one reviewer', true); return; }
-    const body = { aiReview: st.ai, note: note.value.trim() };
-    if (st.ai) {
-      body.reviewers = on.filter((r) => !r.isNew).map((r) => ({ persona: r.persona, model: r.model }));
-      body.custom = on.filter((r) => r.isNew).map((r) => ({ persona: r.persona, background: r.background, focus: r.focus, model: r.model }));
-    }
-    send.disabled = true;
-    try { await api('POST', '/api/submit', body); } catch (e) { toast(e.message, true); send.disabled = false; return; }
-    closeSubmit();
-    toast('Round submitted');
-    await load();
-  } }, 'Submit round');
+    if (!on.length) { toast('Pick at least one reviewer', true); return null; }
+    return {
+      mode: 'review',
+      note: note.value.trim(),
+      reviewers: on.filter((r) => !r.isNew).map((r) => ({ persona: r.persona, model: r.model })),
+      custom: on.filter((r) => r.isNew).map((r) => ({ persona: r.persona, background: r.background, focus: r.focus, model: r.model })),
+    };
+  });
 
-  dlg.replaceChildren(h('div', { class: 'help-card submit-card', onclick: (e) => e.stopPropagation() },
-    h('h3', {}, `Submit round ${latest().n}`),
-    h('p', { class: 'muted' }, `${toFix} item(s) for Claude to act on.${undecided ? ` ${undecided} reviewer comment(s) have no decision and carry over.` : ''}`),
-    radio(false, 'Fix only', ' Claude acts on your decisions and comments, nothing else.'),
-    radio(true, 'Fix, then AI review', ' Claude does the same, then the reviewers you pick read the result.'),
+  showDialog(
+    h('h3', {}, 'AI review'),
+    h('p', { class: 'muted' }, 'The reviewers you pick read the document as it is now. Their findings arrive as comments in the next round.'),
+    toFix ? h('p', { class: 'muted' }, `Your ${toFix} pending item(s) stay as they are until you press Submit round.`) : null,
     panel, note,
-    h('div', { class: 'row' }, h('button', { onclick: closeSubmit }, 'Cancel'), send)));
-  dlg.hidden = false;
+    h('div', { class: 'row' }, h('button', { onclick: closeSubmit }, 'Cancel'), send));
 }
-$('#submit-btn').addEventListener('click', openSubmit);
+$('#submit-btn').addEventListener('click', openSubmitDialog);
+$('#review-btn').addEventListener('click', openReviewDialog);
 dlg.addEventListener('click', closeSubmit);
 
 // ---------- keyboard ----------

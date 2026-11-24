@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  normalizeWs, plainFromHtml, findQuote, quoteMatches, makeTextAnchor, stripInlineMd, tokenize, wordDiff,
+  normalizeWs, pageTitle, plainFromHtml, findQuote, quoteMatches, makeTextAnchor, stripInlineMd, tokenize, wordDiff,
 } from '../lib/text.mjs';
 
 test('normalizeWs collapses whitespace', () => {
@@ -95,4 +95,10 @@ test('plainFromHtml: case-sensitive entities, more names, quoted ">" in attribut
   assert.equal(plainFromHtml('<p>&rArr; &rarr; &check; &frac12;</p>'), '⇒ → ✓ ½');
   assert.equal(plainFromHtml('<p><span title="a>b">x</span></p>'), 'x');
   assert.equal(plainFromHtml('<style>p{}</style><p>y</p>'), 'y');
+});
+
+test('pageTitle leads with the session title, so tabs of different sessions can be told apart', () => {
+  assert.equal(pageTitle('Auth spec review', 'Auth design'), 'Auth spec review · Auth design');
+  assert.equal(pageTitle(null, 'Auth design'), 'ReWriter: Auth design');
+  assert.equal(pageTitle('', 'Auth design'), 'ReWriter: Auth design');
 });

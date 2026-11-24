@@ -1,4 +1,4 @@
-import { normalizeWs, findQuote, makeTextAnchor, wordDiff } from '/lib/text.mjs';
+import { normalizeWs, findQuote, makeTextAnchor, pageTitle, wordDiff } from '/lib/text.mjs';
 
 const SEVS = ['BLOCKER', 'MAJOR', 'MINOR', 'NITPICK'];
 const SEV_RANK = { USER: 0, NITPICK: 1, MINOR: 2, MAJOR: 3, BLOCKER: 4 };
@@ -79,6 +79,7 @@ async function load() {
         const key = `${ui.viewRound}|${JSON.stringify(fresh)}`;
         if (key === ui.lastKey) continue; // nothing changed: keep DOM (and the user's text selection)
         ui.lastKey = key;
+        const statusBefore = ui.data ? latest().status : null; // null: this is the page's first look
         ui.data = fresh;
         const rounds = ui.data.review.rounds;
         if (ui.viewRound !== null && !rounds.some((r) => r.n === ui.viewRound && r.publishedAt)) ui.viewRound = null;
@@ -89,6 +90,9 @@ async function load() {
         // Diff base text comes from the same DOM walk as the live article, so both sides agree.
         ui.basePlain = ui.base ? buildIndex(new DOMParser().parseFromString(`<body>${ui.base.html}</body>`, 'text/html').body).plain : '';
         render();
+        // Approved while this tab was showing the review (here, in another tab, or by Claude for the
+        // author): the tab is done. One that opens an already approved review is there to show it.
+        if (statusBefore && statusBefore !== 'approved' && latest().status === 'approved') closeTab();
       } catch (e) { toast(e.message, true); }
     } while (loading.again);
   })();
@@ -97,8 +101,22 @@ async function load() {
   loading = null;
   return p;
 }
+// Closes this tab once its review is approved: the server is stopping and there is nothing left to do
+// here. A browser lets a page close its own tab only in some cases (roughly: a tab opened for this page
+// that never went anywhere else, which is what `serve` opens). Where it refuses, nothing happens: the tab
+// stays, read-only, and its banner says it can be closed.
+// The pause before a visible tab goes: long enough to see "Approved" land, short enough not to be waited for.
+const CLOSE_TAB_MS = 800;
+function closeTab() {
+  const go = () => window.close();
+  if (document.hidden) go(); // nobody is reading it, and a hidden tab's timers are held back
+  else setTimeout(go, CLOSE_TAB_MS);
+}
+
 let reloadTimer;
-const scheduleLoad = () => { clearTimeout(reloadTimer); reloadTimer = setTimeout(load, 80); };
+// A hidden tab's timers are held back by the browser (to once a second, later once a minute), and the last
+// change of a review comes just before its server stops: there, load at once instead of after the pause.
+const scheduleLoad = () => { clearTimeout(reloadTimer); if (document.hidden) load(); else reloadTimer = setTimeout(load, 80); };
 
 // ---------- text index over the rendered article ----------
 // Mirrors normalizeWs(textContent).trim(): plain[i] maps to a raw char position.
@@ -189,7 +207,7 @@ function passes(c) {
 function render() {
   const review = ui.data.review;
   const L = latest();
-  document.title = `ReWriter: ${ui.view?.title || review.article}`;
+  document.title = pageTitle(ui.data.sessionTitle, ui.view?.title || review.article);
   $('#doc-title').textContent = ui.view?.title || review.article;
   document.body.classList.toggle('read-only', readOnly());
   // The round is with Claude (handed over, or being worked on): nothing may change until it publishes.
@@ -211,7 +229,7 @@ function render() {
   $('#round-label').textContent = `Round ${viewedRound()}`;
   const st = $('#round-status');
   st.hidden = !isPast() && L.status === 'open'; // "open" is the normal state: say nothing
-  st.textContent = isPast() ? 'snapshot' : ({ submitted: 'Waiting for Claude', preparing: 'Claude is working' }[L.status] || L.status);
+  st.textContent = isPast() ? 'snapshot' : ({ submitted: 'Waiting for Claude', preparing: 'Claude is working', approved: 'Approved' }[L.status] || L.status);
   st.className = `pill st-${isPast() ? 'past' : L.status}${withClaude ? ' working' : ''}`;
 
   $('#diff-wrap').hidden = !ui.base; // no previous round: nothing to diff against
@@ -225,6 +243,7 @@ function render() {
   }));
   $('#submit-btn').disabled = readOnly();
   $('#review-btn').disabled = readOnly();
+  $('#approve-btn').disabled = readOnly();
 
   const banner = $('#banner');
   const prev = review.rounds[review.rounds.length - 2]; // the round whose request Claude is working on
@@ -241,6 +260,10 @@ function render() {
     const pickup = 'Claude picks it up if it is waiting; otherwise tell it to continue.';
     msg = reqMode(L.request) === 'review' ? `AI review requested: ${names(L.request)}. ${pickup}`
       : `Round ${L.n} submitted. Asked for fixes only. ${pickup}`;
+  } else if (L.status === 'approved') {
+    // The end of the review. Its server stops once it has said so, which is why this page goes quiet.
+    info = true;
+    msg = `Approved on ${new Date(L.approvedAt).toLocaleDateString()}. This review is closed and its server has stopped, so this page no longer updates: you can close this tab. To change the document, ask Claude to reopen the review.`;
   }
   banner.hidden = !msg; banner.textContent = msg;
   banner.className = [info ? 'info' : '', withClaude ? 'busy' : ''].join(' ').trim();
@@ -407,7 +430,10 @@ function renderCard(c, where) {
   }
 
   if (c.decision) {
-    const hint = { approve: ' · Claude applies it next round', decline: ' · Claude accepts or challenges next round', ignore: '' }[c.decision.type];
+    // On an approved review there is no next round: a decision that was still waiting stays undone.
+    const hint = latest().status === 'approved'
+      ? { approve: ' · not acted on: the document was approved as it stood', decline: ' · not acted on: the document was approved as it stood', ignore: '' }[c.decision.type]
+      : { approve: ' · Claude applies it next round', decline: ' · Claude accepts or challenges next round', ignore: '' }[c.decision.type];
     card.append(h('div', { class: `decision ${c.decision.type}` }, `${DECISION_LABEL[c.decision.type]}${hint}`,
       c.decision.note ? h('div', { class: 'note', html: inline(c.decision.note) }) : null));
   }
@@ -736,13 +762,13 @@ function dismissDialog() {
 const modelLabel = (m) => (m || 'session');
 
 // toFix: what Claude would act on after "Submit round". undecided: reviewer comments with no decision yet.
+// total: comments in either group (one can be in both), which is what an approval leaves as it is.
 function pendingCounts() {
   const cs = ui.data.review.comments;
-  return {
-    undecided: cs.filter((c) => c.author === 'ai' && c.status === 'open' && !c.decision).length,
-    toFix: cs.filter((c) => c.status !== 'resolved' && (c.decision?.type === 'approve' || c.decision?.type === 'decline'
-      || (c.author === 'user' && !c.thread.some((t) => t.author === 'ai')) || c.thread[c.thread.length - 1]?.author === 'user')).length,
-  };
+  const undecided = cs.filter((c) => c.author === 'ai' && c.status === 'open' && !c.decision);
+  const toFix = cs.filter((c) => c.status !== 'resolved' && (c.decision?.type === 'approve' || c.decision?.type === 'decline'
+    || (c.author === 'user' && !c.thread.some((t) => t.author === 'ai')) || c.thread[c.thread.length - 1]?.author === 'user'));
+  return { undecided: undecided.length, toFix: toFix.length, total: new Set([...undecided, ...toFix]).size };
 }
 
 function showDialog(...children) {
@@ -751,12 +777,12 @@ function showDialog(...children) {
 }
 
 // Posts the request that ends the round; `body` is a function so it is read at click time.
-function sendButton(label, done, body) {
-  const send = h('button', { class: 'primary', onclick: async () => {
+function sendButton(label, done, body, { path = '/api/submit', cls = 'primary' } = {}) {
+  const send = h('button', { class: cls, onclick: async () => {
     const payload = body();
     if (!payload) return;
     send.disabled = true;
-    try { await api('POST', '/api/submit', payload); } catch (e) { toast(e.message, true); send.disabled = false; return; }
+    try { await api('POST', path, payload); } catch (e) { toast(e.message, true); send.disabled = false; return; }
     closeSubmit();
     toast(done);
     await load();
@@ -777,6 +803,23 @@ function openSubmitDialog() {
     h('h3', {}, `Submit round ${latest().n}`),
     h('p', { class: 'muted' }, `${toFix} item(s) for Claude to act on.${undecided ? ` ${undecided} reviewer comment(s) have no decision and carry over.` : ''}`),
     toFix ? null : h('p', { class: 'muted' }, 'Nothing for Claude to act on yet: comment, decide on a reviewer comment, or write a note below.'),
+    note,
+    h('div', { class: 'row' }, h('button', { onclick: closeSubmit }, 'Cancel'), send));
+}
+
+// "Approve": this version is final. It ends the review, so it always asks first, and it says in so many
+// words what will be left undone: an approval must never be a way to lose requests without noticing.
+function openApproveDialog() {
+  if (readOnly()) return;
+  closePopover(); ui.form = null;
+  const { toFix, undecided, total } = pendingCounts();
+  const note = h('textarea', { placeholder: 'Note (optional)…' });
+  const send = sendButton('Approve', 'Approved', () => ({ note: note.value.trim() }), { path: '/api/approve', cls: 'approve-doc' });
+  const left = [toFix ? `${toFix} waiting for Claude` : '', undecided ? `${undecided} reviewer comment(s) without a decision` : ''].filter(Boolean).join(', ');
+  showDialog(
+    h('h3', {}, 'Approve this version'),
+    h('p', {}, `Round ${latest().n} of ${ui.view?.title || ui.data.review.article} becomes final and the review is closed. Claude makes no further changes and no reviewers run.`),
+    total ? h('p', { class: 'warn' }, `${total} open item(s) will `, h('strong', {}, 'not be acted on'), `: ${left}.`) : null,
     note,
     h('div', { class: 'row' }, h('button', { onclick: closeSubmit }, 'Cancel'), send));
 }
@@ -972,6 +1015,7 @@ async function openReviewDialog() {
 }
 $('#submit-btn').addEventListener('click', openSubmitDialog);
 $('#review-btn').addEventListener('click', openReviewDialog);
+$('#approve-btn').addEventListener('click', openApproveDialog);
 // Close on a click that both starts and ends on the backdrop: a text selection dragged out of the card must not.
 let pressedBackdrop = false;
 dlg.addEventListener('mousedown', (e) => { pressedBackdrop = e.target === dlg; });

@@ -25,6 +25,7 @@
     <button id="help-btn" class="ghost" title="Keyboard shortcuts (?)">?</button>
     <button id="review-btn" title="Have reviewers read the document. Nothing is fixed; your pending items wait.">AI review</button>
     <button id="submit-btn" class="primary" title="Hand your comments and decisions to Claude to fix">Submit round</button>
+    <button id="approve-btn" class="approve-doc" title="This version is final: close the review">Approve</button>
   </div>
 </header>
 <div id="banner" hidden></div>
@@ -71,7 +72,7 @@
       <tr><td><kbd>f</kbd></td><td>Toggle changes since last round</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>Close popover / form</td></tr>
     </table>
-    <p class="muted">Every action autosaves. A round ends in one of two ways:<br><b>Submit round</b> hands your comments and decisions to Claude to fix.<br><b>AI review</b> has the reviewers you pick read the document; your pending items wait.</p>
+    <p class="muted">Every action autosaves. A round ends in one of three ways:<br><b>Submit round</b> hands your comments and decisions to Claude to fix.<br><b>AI review</b> has the reviewers you pick read the document; your pending items wait.<br><b>Approve</b> makes this version final and closes the review, and this tab with it; whatever is still open is left as it is.</p>
   </div>
 </div>
 <div id="submit-dlg" hidden></div>

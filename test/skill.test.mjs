@@ -23,6 +23,8 @@ test('every command in the skill table exists in the CLI, and the flow uses requ
   const help = spawnSync(process.execPath, [join(ROOT, 'rewriter.mjs'), 'help'], { encoding: 'utf8' }).stdout;
   const commands = [...skill.matchAll(/^\| `([a-z-]+) <doc>/gm)].map((x) => x[1]); // rows of the command table only
   assert.ok(commands.includes('request-review'));
+  assert.ok(commands.includes('approve'));
+  assert.ok(commands.includes('reopen'));
   for (const c of commands) assert.match(help, new RegExp(`^  ${c}\\b`, 'm'), `skill documents "${c}", CLI help does not`);
   assert.match(skill, /request\.mode/);
   assert.doesNotMatch(skill, /Fix, then AI review|request\.aiReview/);
@@ -32,6 +34,36 @@ test('every command in the skill table exists in the CLI, and the flow uses requ
 
 test('plugin and package versions match', () => {
   const v = (f) => JSON.parse(readFileSync(join(ROOT, f), 'utf8')).version;
-  assert.equal(v('.claude-plugin/plugin.json'), '1.2.0');
-  assert.equal(v('package.json'), '1.2.0');
+  assert.equal(v('.claude-plugin/plugin.json'), '1.3.0');
+  assert.equal(v('package.json'), '1.3.0');
+});
+
+test('the skill is safe for parallel sessions: JSON goes over stdin, and a round held elsewhere is left alone', () => {
+  // Fixed temp file names are shared by every session reviewing a document in the same folder.
+  assert.doesNotMatch(skill, /tmp-[a-z*]/);
+  const fileArgs = [...skill.matchAll(/--file (\S+)/g)].map((x) => x[1].replace(/[`.,)]+$/, ''));
+  assert.ok(fileArgs.length >= 3);
+  assert.deepEqual([...new Set(fileArgs)], ['-']);
+  const commands = [...skill.matchAll(/^\| `([a-z-]+) <doc>/gm)].map((x) => x[1]);
+  assert.ok(commands.includes('claim'));
+  // the words the CLI uses when it refuses, so Claude can match the error to the instruction
+  assert.match(skill, /another Claude session/);
+  const refused = spawnSync(process.execPath, [join(ROOT, 'rewriter.mjs'), 'help'], { encoding: 'utf8' }).stdout;
+  assert.match(refused, /another session/);
+});
+
+test('the skill treats approval as the end: nothing runs after it', () => {
+  assert.match(skill, /roundStatus.{0,40}approved/);
+  assert.match(skill, /do not run `next`, `publish`, `serve` or another `wait`/i);
+  assert.match(skill, /`approve <doc>`/);
+  assert.match(skill, /`reopen <doc>`/);
+  assert.match(skill, /never reopen on your own initiative/i);
+});
+
+test('the skill does not let an approval or a reopen start work nobody asked for', () => {
+  assert.doesNotMatch(skill, /without asking/);
+  assert.match(skill, /only asked to review/);
+  assert.match(skill, /`held`/);
+  assert.match(skill, /`reopen <doc>`[\s\S]{0,500}only what\s+the author asked for/); // the sentence wraps
+  assert.match(skill, /between `next` or `reopen` and `publish`/);
 });

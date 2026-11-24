@@ -192,6 +192,15 @@ function render() {
   document.title = `ReWriter: ${ui.view?.title || review.article}`;
   $('#doc-title').textContent = ui.view?.title || review.article;
   document.body.classList.toggle('read-only', readOnly());
+  // The round is with Claude (handed over, or being worked on): nothing may change until it publishes.
+  const withClaude = !isPast() && (L.status === 'submitted' || L.status === 'preparing');
+  if (readOnly()) {
+    // Close whatever could still send a change: the round dialogs, a comment or reply form, the "Comment" button.
+    if (!dlg.hidden) closeSubmit();
+    if (ui.form) { if (ui.form.kind === 'new') closePopover(); ui.form = null; }
+    $('#sel-btn').hidden = true;
+  }
+  $('#new-general').disabled = readOnly();
 
   // Header controls appear only when they can do something.
   const sel = $('#round-select');
@@ -202,8 +211,8 @@ function render() {
   $('#round-label').textContent = `Round ${viewedRound()}`;
   const st = $('#round-status');
   st.hidden = !isPast() && L.status === 'open'; // "open" is the normal state: say nothing
-  st.textContent = isPast() ? 'snapshot' : L.status;
-  st.className = `pill st-${isPast() ? 'past' : L.status}`;
+  st.textContent = isPast() ? 'snapshot' : ({ submitted: 'Waiting for Claude', preparing: 'Claude is working' }[L.status] || L.status);
+  st.className = `pill st-${isPast() ? 'past' : L.status}${withClaude ? ' working' : ''}`;
 
   $('#diff-wrap').hidden = !ui.base; // no previous round: nothing to diff against
   $('#diff-toggle').checked = Boolean(ui.base) && ui.diff;
@@ -234,7 +243,7 @@ function render() {
       : `Round ${L.n} submitted. Asked for fixes only. ${pickup}`;
   }
   banner.hidden = !msg; banner.textContent = msg;
-  banner.className = info ? 'info' : '';
+  banner.className = [info ? 'info' : '', withClaude ? 'busy' : ''].join(' ').trim();
 
   renderChips();
   renderDoc();

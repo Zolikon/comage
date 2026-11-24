@@ -37,7 +37,7 @@ kbd { font: 12px ui-monospace, Menlo, monospace; border: 1px solid var(--line); 
 .muted { color: var(--muted); }
 
 /* header */
-header#top { display: grid; grid-template-columns: 1fr minmax(0, auto) 1fr; align-items: center; gap: 20px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 20; }
+header#top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 20px; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 20; }
 .head-left, .head-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .head-right { justify-content: flex-end; }
 .head-right button { white-space: nowrap; flex-shrink: 0; }
@@ -60,6 +60,13 @@ header#top { display: grid; grid-template-columns: 1fr minmax(0, auto) 1fr; alig
 .pill.st-open { color: var(--minor); } .pill.st-preparing { color: var(--major); } .pill.st-submitted { color: var(--ok); }
 #banner { padding: 8px 16px; font-size: 14px; background: var(--major-bg); border-bottom: 1px solid var(--line); }
 #banner.info { background: var(--minor-bg); }
+/* the round is with Claude: a spinner on the banner, a pulsing pill in the header */
+#banner.busy::before { content: ""; display: inline-block; width: 11px; height: 11px; margin-right: 8px; vertical-align: -1px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: rw-spin .9s linear infinite; }
+.pill.working { animation: rw-pulse 1.6s ease-in-out infinite; background: var(--link); border-color: var(--link); color: #fff; }
+@media (prefers-color-scheme: dark) { .pill.working { color: #0b1220; } }
+@keyframes rw-spin { to { transform: rotate(360deg); } }
+@keyframes rw-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { #banner.busy::before, .pill.working { animation: none; } }
 
 /* layout */
 main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) 420px; min-height: 0; }

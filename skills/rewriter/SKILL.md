@@ -219,7 +219,9 @@ To comment, select text, or use the `+` beside a block, or "General comment". Th
 dialog with a panel of the reviewers that will run (the last panel used on this document is preloaded), a
 library (the author's saved reviewers, then the built-in starters), and an editor for the selected
 reviewer: its description, its model, and buttons to use it as is or to save the change to the library.
-The author can delete an own comment until Claude has answered it. The "Changes since round N" toggle
+The author can delete an own comment until Claude has answered it. While a round is with you the UI is
+locked and says so: "Waiting for Claude" (`submitted`) or "Claude is working" (`preparing`). It unlocks
+when you `publish`. The "Changes since round N" toggle
 shows inserted text in green and removals as red markers. Earlier rounds can be viewed read-only.
 Keys: `j/k` move, `a/A` approve (with comment), `d/D` decline (with comment), `i` ignore, `u` undo,
 `r` resolve/reopen, `R` reply, `y` copy suggestion, `c` comment on selection, `f` toggle changes, `?` help.

@@ -34,8 +34,8 @@ test('every command in the skill table exists in the CLI, and the flow uses requ
 
 test('plugin and package versions match', () => {
   const v = (f) => JSON.parse(readFileSync(join(ROOT, f), 'utf8')).version;
-  assert.equal(v('.claude-plugin/plugin.json'), '1.4.0');
-  assert.equal(v('package.json'), '1.4.0');
+  assert.equal(v('.claude-plugin/plugin.json'), '1.5.0');
+  assert.equal(v('package.json'), '1.5.0');
 });
 
 test('the skill is safe for parallel sessions: JSON goes over stdin, and a round held elsewhere is left alone', () => {
@@ -74,4 +74,24 @@ test('the skill knows where state lives and that approval removes it', () => {
   // A session that missed the `wait` (resumed, or the approval came first) must not start the review over.
   assert.match(skill, /a review you had open[\s\S]{0,400}do not run\s+`init`/i); // the sentence wraps
   assert.doesNotMatch(skill, /next to the document/);
+});
+
+test('reviewers run as the plugin\'s own read-only agent, and the skill fills every placeholder of its prompt', () => {
+  const agent = readFileSync(join(ROOT, 'agents', 'reviewer.md'), 'utf8');
+  const front = /^---\n([\s\S]*?)\n---\n/.exec(agent)[1];
+  assert.match(front, /^name: reviewer$/m);
+  // the agent is addressed as <plugin name>:<agent name>
+  const plugin = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).name;
+  assert.ok(skill.includes(`subagent_type: "${plugin}:reviewer"`));
+  const tools = /^tools: (.*)$/m.exec(front)[1].split(',').map((x) => x.trim());
+  assert.deepEqual(tools, ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch']); // nothing that edits or runs
+  assert.doesNotMatch(front, /^model:/m); // the reviewer's model is set per call; without one, the session's
+  const agentDescription = /^description: (.*)$/m.exec(front)[1];
+  assert.ok(!agentDescription.includes(': '), 'a ": " would break the unquoted YAML value');
+  assert.match(agent, /Reply with \*\*only\*\* a JSON array/);
+  for (const s of ['BLOCKER', 'MAJOR', 'MINOR', 'NITPICK']) assert.ok(agent.includes(`\`${s}\``));
+  const prompt = readFileSync(join(ROOT, 'skills', 'rewriter', 'reviewer-prompt.md'), 'utf8');
+  const placeholders = [...new Set([...prompt.matchAll(/\{\{[a-zA-Z]+\}\}/g)].map((x) => x[0]))];
+  assert.ok(placeholders.length >= 7);
+  for (const p of placeholders) assert.ok(skill.includes(p), `the skill does not say how to fill ${p}`);
 });

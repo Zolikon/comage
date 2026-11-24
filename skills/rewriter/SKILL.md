@@ -159,9 +159,14 @@ Running them:
 
 - **One subagent per reviewer, all dispatched in parallel, every time.** Never review in the main
   conversation, and never let reviewers see each other's output.
+- **Agent type:** every reviewer runs as the plugin's own reviewer agent, `subagent_type: "comage:reviewer"`.
+  It carries the review rules and the output format, starts with no knowledge of this conversation, and
+  can read and search (files, the web) but not edit or run anything. Use no other agent type for a
+  reviewer: not a fork, not a general-purpose or exploring agent, not another plugin's reviewer.
 - **Model:** pass the reviewer's `model` to the subagent (`haiku`, `sonnet`, `opus`, `fable`). Empty means
   don't set one, so it runs on the session's model.
-- **Prompt:** fill `${CLAUDE_SKILL_DIR}/reviewer-prompt.md` per reviewer:
+- **Prompt:** fill `${CLAUDE_SKILL_DIR}/reviewer-prompt.md` per reviewer; the filled template is the whole
+  prompt:
   - `{{persona}}`, `{{background}}`, `{{focus}}` (one `- ` bullet per focus area; omit the list if empty).
   - `{{document}}`: absolute path of the document.
   - `{{docKind}}`, `{{context}}`, `{{blocker}}`: from the table below.
@@ -304,8 +309,7 @@ downloads the author's library as `reviewers.json` for sharing (someone else sav
 file), and **?** explains how a review runs.
 The author can delete an own comment until Claude has answered it. While a round is with you the UI is
 locked and says so: "Waiting for Claude" (`submitted`) or "Claude is working" (`preparing`). It unlocks
-when you `publish`. The "Changes since round N" toggle
-shows inserted text in green and removals as red markers. Earlier rounds can be viewed read-only.
+when you `publish`. Earlier rounds can be viewed read-only.
 Keys: `j/k` move, `a/A` approve (with comment), `d/D` decline (with comment), `i` ignore, `u` undo,
-`r` resolve/reopen, `R` reply, `y` copy suggestion, `c` comment on selection, `f` toggle changes, `?` help.
+`r` resolve/reopen, `R` reply, `y` copy suggestion, `c` comment on selection, `?` help.
 Ignore means "won't act": it resolves the comment and needs no reply from you.

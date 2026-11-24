@@ -12,9 +12,6 @@
   <div class="head-left">
     <div class="brand">Re<span>Writer</span></div>
     <select id="round-select" title="Round to view" hidden></select>
-    <label class="toggle" id="diff-wrap" title="Highlight what changed since the previous round (f)" hidden>
-      <input type="checkbox" id="diff-toggle"> <span id="diff-label">Changes</span>
-    </label>
   </div>
   <div class="head-center">
     <div class="title" id="doc-title">…</div>
@@ -69,7 +66,6 @@
       <tr><td><kbd>R</kbd></td><td>Reply</td></tr>
       <tr><td><kbd>y</kbd></td><td>Copy suggestion</td></tr>
       <tr><td><kbd>c</kbd></td><td>Comment on selected text</td></tr>
-      <tr><td><kbd>f</kbd></td><td>Toggle changes since last round</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>Close popover / form</td></tr>
     </table>
     <p class="muted">Every action autosaves. A round ends in one of three ways:<br><b>Submit round</b> hands your comments and decisions to Claude to fix.<br><b>AI review</b> has the reviewers you pick read the document; your pending items wait.<br><b>Approve</b> makes this version final and closes the review, and this tab with it; whatever is still open is left as it is.</p>

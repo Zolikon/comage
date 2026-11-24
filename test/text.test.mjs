@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  normalizeWs, pageTitle, plainFromHtml, findQuote, quoteMatches, makeTextAnchor, stripInlineMd, tokenize, wordDiff,
+  normalizeWs, pageTitle, plainFromHtml, findQuote, quoteMatches, makeTextAnchor, stripInlineMd,
 } from '../lib/text.mjs';
 
 test('normalizeWs collapses whitespace', () => {
@@ -44,32 +44,6 @@ test('makeTextAnchor round-trips through findQuote', () => {
 test('stripInlineMd removes inline markdown', () => {
   assert.equal(stripInlineMd('use **bold** and `x` [here](http://u)'), 'use bold and x here');
   assert.equal(stripInlineMd('an ![alt text](a.png) and _em_ *it*'), 'an alt text and em it');
-});
-
-test('tokenize gives offsets', () => {
-  assert.deepEqual(tokenize('hi, you'), [
-    { t: 'hi', start: 0, end: 2 }, { t: ',', start: 2, end: 3 }, { t: 'you', start: 4, end: 7 },
-  ]);
-});
-
-test('wordDiff finds replacement', () => {
-  const d = wordDiff('a b c', 'a x c');
-  assert.deepEqual(d.map((x) => x.op), ['eq', 'del', 'ins', 'eq']);
-  const ins = d.find((x) => x.op === 'ins');
-  assert.equal(ins.text, 'x');
-  assert.equal(ins.bStart, 2);
-  assert.equal(ins.bEnd, 3);
-});
-
-test('wordDiff identical input is all eq', () => {
-  assert.ok(wordDiff('same words here', 'same words here').every((x) => x.op === 'eq'));
-});
-
-test('wordDiff handles large input without blowing up', () => {
-  const a = Array.from({ length: 3000 }, (_, i) => `w${i}`).join(' ');
-  const b = a.replace('w1500', 'changed');
-  const d = wordDiff(a, b);
-  assert.equal(d.filter((x) => x.op === 'ins').map((x) => x.text).join(''), 'changed');
 });
 
 test('stripInlineMd removes block markers at line start', () => {

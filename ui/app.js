@@ -920,7 +920,12 @@ async function openReviewDialog() {
         h('span', { class: 'rv-name' }, r.persona), h('span', { class: 'rv-tag' }, SOURCE_TAG[r.source]))),
       h('button', { class: 'small ghost rv-new', onclick: () => { sel = { persona: '', isNew: true, desc: '', model: '' }; draw(); } }, '+ New reviewer'));
   };
-  function draw() { drawLeft(); drawRight(); }
+  function draw() {
+    drawLeft(); drawRight();
+    // No reviewers, no review: the button says why it is off.
+    send.disabled = !panel.length;
+    send.title = panel.length ? '' : 'Add at least one reviewer to the panel';
+  }
 
   const note = h('textarea', { placeholder: 'Note for the reviewers (optional), e.g. what to focus on…' });
   note.addEventListener('input', () => { touched = true; });

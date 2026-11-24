@@ -89,7 +89,6 @@ ask Claude in chat for "the default panel".
 | `rewriter.mjs`, `lib/` | CLI, review model, local server, reviewer registry |
 | `ui/` | browser UI |
 | `vendor/` | bundled `marked` (MIT), so no install step |
-| `docs/` | design notes and implementation plan |
 | `install.mjs` | component installer (app + skill, no plugin needed) |
 | `test/` | `npm test` |
 

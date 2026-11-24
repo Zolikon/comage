@@ -10,14 +10,14 @@ choosing the reviewers and the model each one runs on. Reviewers always run as s
 ## Install
 
 ```bash
-claude plugin marketplace add ~/work/comage
+claude plugin marketplace add Zolikon/comage
 claude plugin install comage@comage
 ```
 
-Or try it for one session without installing:
+Or, from a local checkout, try it for one session without installing:
 
 ```bash
-claude --plugin-dir ~/work/comage
+claude --plugin-dir path/to/comage
 ```
 
 Requires Node 22. There is nothing to `npm install`.

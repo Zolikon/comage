@@ -1,11 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, writeFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tmpArticle } from './helpers.mjs';
+import { stateDir, tmpArticle } from './helpers.mjs';
+import * as m from '../lib/model.mjs';
 import { startServer } from '../lib/server.mjs';
 
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'rewriter.mjs');
@@ -28,7 +29,7 @@ test('cli init/add/publish/status/pending', () => {
   assert.match(st.stdout, /3 open/);
   const p = JSON.parse(run('pending', dir).stdout);
   assert.equal(p.carriedOver, 3);
-  const state = JSON.parse(readFileSync(join(dir, '.rewriter', 'review.json'), 'utf8'));
+  const state = JSON.parse(readFileSync(join(stateDir(dir), 'review.json'), 'utf8'));
   assert.equal(state.comments.length, 3);
 });
 
@@ -47,10 +48,10 @@ test('cli reply via file', () => {
   run('init', dir);
   run('add', dir, '--severity', 'MAJOR', '--body', 'x');
   run('publish', dir);
-  const state = JSON.parse(readFileSync(join(dir, '.rewriter', 'review.json'), 'utf8'));
+  const state = JSON.parse(readFileSync(join(stateDir(dir), 'review.json'), 'utf8'));
   state.rounds[0].status = 'submitted';
   state.comments[0].decision = { type: 'decline', note: 'no', round: 1 };
-  writeFileSync(join(dir, '.rewriter', 'review.json'), JSON.stringify(state));
+  writeFileSync(join(stateDir(dir), 'review.json'), JSON.stringify(state));
   assert.equal(run('next', dir).status, 0);
   const f = join(dir, 'r.json');
   writeFileSync(f, JSON.stringify([{ id: 'c1', kind: 'accepted', body: 'fair' }]));
@@ -78,7 +79,7 @@ test('cli: parallel add calls on one document all land, each with its own id', a
   const n = 16;
   const results = await Promise.all(Array.from({ length: n }, (_, i) => runAsync({}, 'add', dir, '--severity', 'MINOR', '--body', `b${i}`)));
   assert.deepEqual(results.map((r) => r.status), Array(n).fill(0), results.map((r) => r.stderr).join(''));
-  const { comments } = JSON.parse(readFileSync(join(dir, '.rewriter', 'review.json'), 'utf8'));
+  const { comments } = JSON.parse(readFileSync(join(stateDir(dir), 'review.json'), 'utf8'));
   assert.equal(comments.length, n);
   assert.equal(new Set(comments.map((c) => c.id)).size, n);
   assert.deepEqual(comments.map((c) => c.body).sort(), Array.from({ length: n }, (_, i) => `b${i}`).sort());
@@ -111,13 +112,13 @@ test('cli: the session id comes from the environment; a second session is refuse
 test('cli: of two sessions answering the same submitted round, exactly one gets it', async () => {
   const dir = tmpArticle();
   run('init', dir); run('publish', dir);
-  const state = JSON.parse(readFileSync(join(dir, '.rewriter', 'review.json'), 'utf8'));
+  const state = JSON.parse(readFileSync(join(stateDir(dir), 'review.json'), 'utf8'));
   state.rounds[0].status = 'submitted';
-  writeFileSync(join(dir, '.rewriter', 'review.json'), JSON.stringify(state));
+  writeFileSync(join(stateDir(dir), 'review.json'), JSON.stringify(state));
   const [x, y] = await Promise.all([runAsync({ REWRITER_SESSION: 'session-a' }, 'next', dir), runAsync({ REWRITER_SESSION: 'session-b' }, 'next', dir)]);
   assert.deepEqual([x.status, y.status].sort(), [0, 1]);
   assert.match(x.status ? x.stderr : y.stderr, /picked up by another Claude session/);
-  assert.equal(JSON.parse(readFileSync(join(dir, '.rewriter', 'review.json'), 'utf8')).rounds.length, 2);
+  assert.equal(JSON.parse(readFileSync(join(stateDir(dir), 'review.json'), 'utf8')).rounds.length, 2);
 });
 
 // ---- running: the review UIs of the calling session (what the footer shows) ----
@@ -154,7 +155,7 @@ test('running with nothing running prints [] or nothing, and exits 0', async () 
 
 // ---- approve: the third way a round ends ----
 
-test('cli approve closes the review; status and pending say so; reopen starts round 2', () => {
+test('cli approve prints the approval, then removes the review', () => {
   const dir = tmpArticle();
   run('init', dir);
   run('add', dir, '--severity', 'MINOR', '--body', 'left open', '--quote', 'The cat ran');
@@ -163,25 +164,84 @@ test('cli approve closes the review; status and pending say so; reopen starts ro
   assert.equal(a.status, 0, a.stderr);
   const p = JSON.parse(a.stdout);
   assert.deepEqual([p.roundStatus, p.request.mode, p.request.note, p.notActedOn], ['approved', 'approve', 'good', 1]);
-  const st = run('status', dir).stdout;
-  assert.match(st, /Round 1 \(approved\)/);
-  assert.match(st, /Next: nothing\. The author approved this version; the review is closed\. `reopen` starts a new round if the document has to change\./);
-  assert.match(st, /Left as they were: 1 item\(s\) not acted on\./);
-  const next = run('next', dir);
-  assert.notEqual(next.status, 0);
-  assert.match(next.stderr, /approved and closed/);
-  const r = JSON.parse(as('s1')('reopen', dir).stdout);
-  assert.deepEqual([r.n, r.status, r.session], [2, 'preparing', 's1']);
-  assert.match(as('s1')('status', dir).stdout, /Round 2 \(preparing\)[\s\S]*Reopened after approval\. Next: Claude makes the change, then `publish`\./);
+  // The review is over: its state is gone, and so is every folder ReWriter made for it.
+  assert.equal(existsSync(join(dir, '.rewriter')), false);
+  const st = run('status', dir);
+  assert.notEqual(st.status, 0);
+  assert.match(st.stderr, /no ReWriter review/);
+  // A document that has to change after all gets a new review, from round 1.
+  assert.equal(run('init', dir).status, 0);
+  assert.match(run('status', dir).stdout, /Round 1 \(preparing\)/);
   assert.notEqual(run('approve', dir).status, 0, 'a round being prepared cannot be approved');
 });
 
-test('cli status on an approved review with nothing left says nothing about leftovers', () => {
+test('cli status inside the minute after an approval says the review is closed', () => {
+  const dir = tmpArticle();
+  m.init(dir);
+  m.publish(dir);
+  m.approve(dir); // through the model: nothing has removed the state yet
+  const st = run('status', dir).stdout;
+  assert.match(st, /Round 1 \(approved\)/);
+  assert.match(st, /Next: nothing\. The author approved this version; the review is closed and its state is being removed\./);
+  assert.doesNotMatch(st, /reopen/);
+});
+
+test('reopen is no longer a command', () => {
+  const dir = tmpArticle();
+  run('init', dir);
+  const r = run('reopen', dir);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /unknown command: reopen/);
+  assert.doesNotMatch(run('help').stdout, /reopen/);
+});
+
+test('a review started while the approved one waits to be removed survives', async () => {
   const dir = tmpArticle();
   run('init', dir);
   run('publish', dir);
-  run('approve', dir);
-  assert.doesNotMatch(run('status', dir).stdout, /Left as they were/);
+  const approving = runAsync({}, 'approve', dir);
+  await new Promise((r) => setTimeout(r, 450)); // approved, and `approve` is in its pause before removing
+  assert.equal(run('init', dir).status, 0);
+  run('add', dir, '--severity', 'MINOR', '--body', 'belongs to the new review');
+  assert.equal((await approving).status, 0);
+  const st = run('status', dir);
+  assert.match(st.stdout, /Round 1 \(preparing\)/, st.stderr);
+  assert.match(st.stdout, /1 open/);
+});
+
+test('approve leaves the removing to a running server', async () => {
+  const dir = tmpArticle();
+  run('init', dir);
+  const s = await startServer(dir, { open: false, log: () => {} });
+  try {
+    run('publish', dir);
+    const a = await runAsync({}, 'approve', dir);
+    assert.equal(a.status, 0, a.stderr);
+    // `approve` is back at once: the server removes the review, after it has told its tabs.
+    assert.equal(existsSync(join(stateDir(dir), 'review.json')), true);
+    await s.closed;
+    assert.equal(existsSync(join(dir, '.rewriter')), false);
+  } finally { await s.close(); }
+});
+
+test('wait on a document with no review says gone, and does not suggest starting one', async () => {
+  const dir = tmpArticle();
+  const out = await runAsync({}, 'wait', dir, '--timeout', '5');
+  assert.equal(out.status, 0, out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), { roundStatus: 'gone' });
+  assert.doesNotMatch(out.stderr, /init/);
+});
+
+test('wait says gone when the review disappears without an approval', async () => {
+  const dir = tmpArticle();
+  run('init', dir);
+  run('publish', dir);
+  const waiting = runAsync({}, 'wait', dir, '--timeout', '10');
+  await new Promise((r) => setTimeout(r, 600));
+  m.removeReview(dir);
+  const out = await waiting;
+  assert.equal(out.status, 0, out.stderr);
+  assert.deepEqual(JSON.parse(out.stdout), { roundStatus: 'gone' });
 });
 
 test('wait exits when the author approves', async () => {

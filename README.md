@@ -54,10 +54,15 @@ Each round ends with one of three buttons:
   findings. Nothing is fixed in that round; your own pending items wait for your next **Submit round**.
 - **Approve**: the document is final as it stands. The review is closed, its server stops, its browser tab
   closes (where the browser lets a page close its own tab; otherwise the page says it can be closed), and
-  Claude goes on with what the document was for. Anything still open is left as it is (the dialog tells you how much).
-  Ask Claude to reopen the review if the document has to change after all.
+  Claude goes on with what the document was for. Anything still open is not acted on (the dialog tells you
+  how much), and the review's state is removed. If the document has to change after all, it gets a new
+  review.
 
-Review state is stored next to the document in `.rewriter/`.
+Review state is stored in `.rewriter/` at the project root: the git repository the document is in, or
+the document's own folder when it is in none. The folder ignores itself in git, so there is nothing to add
+to a `.gitignore`. It holds reviews in progress only: an approved review is removed, and when nothing is
+under review the folder is gone. Reviews from versions before 1.4.0, which kept their state beside each
+document, move to the project root the first time they are used.
 
 ## Several sessions at once
 

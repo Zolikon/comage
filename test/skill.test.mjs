@@ -24,7 +24,7 @@ test('every command in the skill table exists in the CLI, and the flow uses requ
   const commands = [...skill.matchAll(/^\| `([a-z-]+) <doc>/gm)].map((x) => x[1]); // rows of the command table only
   assert.ok(commands.includes('request-review'));
   assert.ok(commands.includes('approve'));
-  assert.ok(commands.includes('reopen'));
+  assert.ok(!commands.includes('reopen'), 'an approved review is removed: there is nothing to reopen');
   for (const c of commands) assert.match(help, new RegExp(`^  ${c}\\b`, 'm'), `skill documents "${c}", CLI help does not`);
   assert.match(skill, /request\.mode/);
   assert.doesNotMatch(skill, /Fix, then AI review|request\.aiReview/);
@@ -34,8 +34,8 @@ test('every command in the skill table exists in the CLI, and the flow uses requ
 
 test('plugin and package versions match', () => {
   const v = (f) => JSON.parse(readFileSync(join(ROOT, f), 'utf8')).version;
-  assert.equal(v('.claude-plugin/plugin.json'), '1.3.0');
-  assert.equal(v('package.json'), '1.3.0');
+  assert.equal(v('.claude-plugin/plugin.json'), '1.4.0');
+  assert.equal(v('package.json'), '1.4.0');
 });
 
 test('the skill is safe for parallel sessions: JSON goes over stdin, and a round held elsewhere is left alone', () => {
@@ -56,14 +56,22 @@ test('the skill treats approval as the end: nothing runs after it', () => {
   assert.match(skill, /roundStatus.{0,40}approved/);
   assert.match(skill, /do not run `next`, `publish`, `serve` or another `wait`/i);
   assert.match(skill, /`approve <doc>`/);
-  assert.match(skill, /`reopen <doc>`/);
-  assert.match(skill, /never reopen on your own initiative/i);
 });
 
-test('the skill does not let an approval or a reopen start work nobody asked for', () => {
+test('the skill does not let an approval start work nobody asked for', () => {
   assert.doesNotMatch(skill, /without asking/);
   assert.match(skill, /only asked to review/);
-  assert.match(skill, /`held`/);
-  assert.match(skill, /`reopen <doc>`[\s\S]{0,500}only what\s+the author asked for/); // the sentence wraps
-  assert.match(skill, /between `next` or `reopen` and `publish`/);
+  assert.match(skill, /`held`/); // still how an AI review round reports the author's pending items
+});
+
+test('the skill knows where state lives and that approval removes it', () => {
+  assert.match(skill, /<project root>\/\.rewriter\//);
+  assert.doesNotMatch(skill, /`reopen/);
+  assert.match(skill, /read what `wait` printed first/i);
+  assert.match(skill, /roundStatus.{0,20}gone/);
+  assert.match(skill, /no ReWriter review.{0,120}expected/is);
+  assert.match(skill, /between `init` or `next` and `publish`/);
+  // A session that missed the `wait` (resumed, or the approval came first) must not start the review over.
+  assert.match(skill, /a review you had open[\s\S]{0,400}do not run\s+`init`/i); // the sentence wraps
+  assert.doesNotMatch(skill, /next to the document/);
 });

@@ -29,12 +29,13 @@ test('two documents in one folder keep separate reviews', () => {
   const plan = join(dir, 'plan.md');
   assert.equal(m.init(spec, { type: 'spec' }).docType, 'spec');
   m.init(plan, { type: 'plan' });
-  assert.ok(existsSync(join(dir, '.rewriter', 'spec.md', 'review.json')));
-  assert.ok(existsSync(join(dir, '.rewriter', 'plan.md', 'review.json')));
+  assert.ok(existsSync(join(m.target(spec).stateDir, 'review.json')));
+  assert.ok(existsSync(join(m.target(plan).stateDir, 'review.json')));
+  assert.notEqual(m.target(spec).stateDir, m.target(plan).stateDir);
   m.addComments(spec, [{ severity: 'MAJOR', body: 'which store?', quote: 'stores widgets' }]);
   assert.throws(() => m.addComments(plan, [{ severity: 'MAJOR', body: 'x', quote: 'stores widgets' }]), /quote not found/);
   m.publish(spec);
-  assert.ok(existsSync(join(dir, '.rewriter', 'spec.md', 'rounds', '1.md')));
+  assert.ok(existsSync(join(m.target(spec).stateDir, 'rounds', '1.md')));
   assert.equal(m.load(spec).comments.length, 1);
   assert.equal(m.load(plan).comments.length, 0);
   assert.equal(m.load(plan).rounds[0].status, 'preparing');
@@ -140,7 +141,7 @@ test('server: reviewers endpoint, submit with a request, bad request is a 400', 
     assert.deepEqual(m.load(spec).rounds[0].request.reviewers, [{ persona: 'Implementer', model: 'sonnet' }]);
     const again = await (await fetch(`${base}/api/reviewers`)).json();
     assert.deepEqual(again.last, [{ persona: 'Implementer', model: 'sonnet' }]);
-    assert.equal((await fetch(`${base}/.rewriter/spec.md/review.json`)).status, 404);
+    assert.equal((await fetch(`${base}/.rewriter/reviews/spec.md/review.json`)).status, 404);
   } finally { server.close(); }
 });
 
@@ -177,7 +178,7 @@ test('cli: init --type on a file, reviewers, status, wait', async () => {
 test('article in a folder still works by directory', () => {
   const dir = tmpArticle(ARTICLE);
   const run = (...args) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' });
-  assert.match(run('init', dir).stdout, /\.rewriter \(document, round 1/);
+  assert.match(run('init', dir).stdout, /\.rewriter\/reviews\/index\.md \(document, round 1/);
   assert.equal(run('init', dir, '--type', 'article').status, 1);
 });
 
@@ -256,7 +257,7 @@ test('cli: request-review does what the AI review button does', () => {
   assert.equal(early.status, 1);
   assert.match(early.stderr, /needs round 1 to be 'open', but it is 'preparing'/);
   run('publish', spec);
-  assert.match(run('status', spec).stdout, /presses "Submit round" or "AI review"/);
+  assert.match(run('status', spec).stdout, /presses "Submit round", "AI review" or "Approve"/);
 
   writeFileSync(file, JSON.stringify([dba, { persona: 'Nobody' }]));
   const bad = run('request-review', spec, '--file', file);

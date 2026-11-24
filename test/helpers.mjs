@@ -1,6 +1,7 @@
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { target } from '../lib/model.mjs';
 
 // Running servers record themselves in a user-level registry (lib/running.mjs). Tests get their own, so
 // the suite never writes to the real ~/.claude; child processes inherit it.
@@ -22,6 +23,16 @@ export function tmpArticle(md = ARTICLE) {
   writeFileSync(join(dir, 'index.md'), md);
   return dir;
 }
+
+// An empty project: a folder with a .git folder in it, which is what marks a project root.
+export function tmpProject() {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'rw-proj-')));
+  mkdirSync(join(root, '.git'));
+  return root;
+}
+
+// Where the review state of a document (or folder) lives. Tests ask; they never spell the path out.
+export const stateDir = (p) => target(p).stateDir;
 
 // A Claude Code config dir holding one session transcript with the given entries.
 export function fakeSession(id, entries = []) {

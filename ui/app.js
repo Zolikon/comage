@@ -263,7 +263,7 @@ function render() {
   } else if (L.status === 'approved') {
     // The end of the review. Its server stops once it has said so, which is why this page goes quiet.
     info = true;
-    msg = `Approved on ${new Date(L.approvedAt).toLocaleDateString()}. This review is closed and its server has stopped, so this page no longer updates: you can close this tab. To change the document, ask Claude to reopen the review.`;
+    msg = `Approved on ${new Date(L.approvedAt).toLocaleDateString()}. This review is closed and its server has stopped, so this page no longer updates: you can close this tab. To review the document again, ask Claude to start a new review.`;
   }
   banner.hidden = !msg; banner.textContent = msg;
   banner.className = [info ? 'info' : '', withClaude ? 'busy' : ''].join(' ').trim();

@@ -9,9 +9,11 @@ Local PR-style review loop for one markdown document. The author reads it in a b
 and decides on reviewer comments. Every round ends in one of three ways, and the author picks which:
 **Submit round** (you act on the author's comments and decisions), **AI review** (reviewers run as
 subagents and post findings; nothing is fixed in that round) or **Approve** (the document is final as it
-stands: the review is closed and its UI stops). State lives next to the document in
-`.rewriter/` (`review.json` + one snapshot per round). Never edit those files by hand: always go through
-the CLI.
+stands: the review is closed, its UI stops and its state is removed). The state of every review in
+progress lives in `<project root>/.rewriter/` (the root is the git repository the document is in; without
+one, the document's own folder). Never edit those files by hand: always go through the CLI. The folder
+ignores itself in git, and a review from an older version, kept beside its document, moves there by itself
+the first time a command touches it.
 
 ```bash
 rewriter help     # the plugin puts `rewriter` on the Bash tool's PATH; needs Node 22, nothing to install
@@ -31,9 +33,8 @@ found`, run `node "${CLAUDE_PLUGIN_ROOT}/rewriter.mjs" <command> <doc> …` inst
 | `next <doc>` | open the next round after the author submitted; the round is then yours (this session's) |
 | `claim <doc>` | take over a round that another Claude session started and left unfinished |
 | `publish <doc>` | snapshot the document, hand the round to the author |
-| `wait <doc>` | block until the author ends the round (any of the three buttons), then print `pending` |
-| `approve <doc>` | approve for the author, as the UI's **Approve** button does: the review is closed and its UI stops (`--note`) |
-| `reopen <doc>` | start a new round on an approved review; the round is then yours (this session's) |
+| `wait <doc>` | block until the author ends the round (any of the three buttons), then print `pending`; prints `{ "roundStatus": "gone" }` if there is no review (any more) |
+| `approve <doc>` | approve for the author, as the UI's **Approve** button does: the review is closed, its UI stops and its state is removed (`--note`) |
 | `status <doc>` | short summary + what happens next |
 | `reviewers <doc>` | JSON: every reviewer available, `suggested` = meant for this document type |
 | `request-review <doc> --file -` | ask for an AI review for the author, as the UI's **AI review** button does; the panel is a JSON array on stdin (also `--reviewer NAME`…, `--note`) |
@@ -41,7 +42,7 @@ found`, run `node "${CLAUDE_PLUGIN_ROOT}/rewriter.mjs" <command> <doc> …` inst
 | `running` | no `<doc>`. The review UIs running for this session, one `name  url` line each (`--json` for JSON). The user sees the same list under their prompt |
 
 Round states: `preparing` (you work) → `open` (author works) → `submitted` (back to you) or `approved`
-(closed: the end of the review).
+(the end of the review: its state is removed about a second later).
 `add`/`reply` only work while `preparing`. Only the author resolves comments.
 
 ## Start a review (round 1)
@@ -49,17 +50,18 @@ Round states: `preparing` (you work) → `open` (author works) → `submitted` (
 Do this without being asked whenever the description applies, including for a document you wrote yourself
 in this turn. Don't ask "shall I open it in ReWriter?": open it.
 
-1. `status <doc>`. If a review exists, continue from its state rather than starting over; one that is
-   `approved` is closed: leave it unless the author asks to change the document or to see the review
-   (see "Approved"). Otherwise `init <doc> --type T`: pick `T` from what the document is (`article`, `spec`, `plan`; anything else gets
+1. `status <doc>`. If a review exists, continue from its state rather than starting over. If it answers
+   "no ReWriter review", there is none: `init <doc> --type T` (the one exception is a review you had open
+   in this session, see "Next round" step 1): pick `T` from what the document is (`article`, `spec`, `plan`; anything else gets
    the generic reviewers).
 2. `publish <doc>`. Round 1 is always the untouched document: post no comments of your own.
 3. Run `serve <doc>` with `run_in_background` and give the user the URL it prints. A document has one
    server, whichever session started it: if one is already running, `serve` prints `already running` with
    that URL and exits at once. That is not an error; use the URL.
 4. If the user asked for reviewers in chat, go to "Reviewers asked for in chat" now.
-5. Start `wait <doc>` with `run_in_background`. When it exits, the author has ended the round: go to "Next
-   round" (or to "Approved", if they approved) without waiting to be told. If you can't run it in the background, ask the user to tell you when
+5. Start `wait <doc>` with `run_in_background`. When it exits, the author has ended the round: read what
+   `wait` printed first, then go to "Next round" (or to "Approved", if it says `approved` or `gone`)
+   without waiting to be told. If you can't run it in the background, ask the user to tell you when
    they have pressed a button.
 6. Tell the user in one or two lines: the document is open in the browser; comment and press **Submit
    round** to have you fix things, press **AI review** to have reviewers read it first, or press
@@ -86,9 +88,14 @@ never in chat. Do what the **AI review** button does:
 
 ## Next round (the author pressed a button)
 
-1. `status <doc>`. If the round is still `open`, the author hasn't pressed a button yet. If it is
-   `approved`, the author approved: go to "Approved" instead. If it says the round is held by another
-   Claude session, stop: see "Several Claude sessions".
+1. If a `wait` brought you here, read what `wait` printed first: `roundStatus` `approved` or `gone` means
+   the review is over, go to "Approved" instead and do not run `status` (it would answer "no ReWriter
+   review"). Otherwise `status <doc>`. If the round is still `open`, the author hasn't pressed a button
+   yet. If it says the round is held by another Claude session, stop: see "Several Claude sessions".
+   If it answers "no ReWriter review" for a review you had open in this session (you had published it
+   and were waiting, or the session was resumed), that review is over: the author approved it, or it was
+   removed, while no `wait` of yours was watching. Go to "Approved" and treat it as `gone`. Do not run
+   `init`: that would start the finished review over.
 2. `next <doc>`, then `pending <doc>`. `request.mode` says which of the two the author chose. If `next`
    fails with "picked up by another Claude session", that session got there first: stop the same way.
 3. **`fix`** (Submit round): read `request.note` first, it is the author's instruction for this round.
@@ -115,9 +122,15 @@ never in chat. Do what the **AI review** button does:
 
 ## Approved (the author pressed Approve)
 
-The author accepted the document as it stands. `pending` shows `roundStatus: "approved"` and
-`request.mode: "approve"`; `request.note` is what they wrote, if anything. The review is closed, and its
-UI server stops by itself.
+The author accepted the document as it stands. What `wait` printed shows `roundStatus: "approved"` and
+`request.mode: "approve"`; `request.note` is what they wrote, if anything. The review is over: its UI
+server stops by itself and its state is removed about a second after the approval. From then on `status`
+and `pending` answer "no ReWriter review" for that document. That is expected, not an error.
+
+If `wait` printed `roundStatus: "gone"` instead, there is no review and `wait` did not see why (it was
+approved and cleaned up before `wait` started or between two looks, or removed by hand). It is over all
+the same: say that the review was closed and ask the author whether they approved it. Do not claim it was
+approved, and do nothing further until they answer.
 
 - Do not run `next`, `publish`, `serve` or another `wait`, and do not edit the document. Nothing is fixed
   after an approval, not even items the author had asked for: `notActedOn` counts what was left open.
@@ -131,11 +144,10 @@ UI server stops by itself.
   the round is `preparing` and yours, `publish` first; if it is `submitted`, run `next` and `publish`
   first, acting on nothing. Then the same three points apply. A `wait` you started earlier exits at this
   point, because `approve` ended the round: that is this same approval, not a second one.
-- **An approved document has to change after all** (the author asks): `reopen <doc>`, then do only what
-  the author asked for, `publish`, `serve`, `wait`, as for any round. Items that were open when they
-  approved are not yours to act on now: `pending` lists them as `held`, and they wait for the author's
-  next **Submit round**. Never reopen on your own initiative.
-- `serve` on an approved review shows it read-only. Run it only when the author asks to see the review.
+- **An approved document has to change after all:** nothing of the old review is left, comments included.
+  Make the change the author asked for; if it then needs their review, that is a new review from round 1
+  ("Start a review").
+- `serve` refuses a review that was approved. There is nothing to show.
 
 ## AI review
 
@@ -267,11 +279,12 @@ id from the environment; you pass nothing.
 
 ## Rules
 
-- Edit the document only while the round is `preparing` (between `next` or `reopen` and `publish`).
+- Edit the document only while the round is `preparing` (between `init` or `next` and `publish`), or when
+  it has no review.
 - Never set or fake `resolved`, and never edit `.rewriter/` files directly.
 - Keep replies short. The author reads them in a sidebar.
-- `.rewriter/` is review scaffolding. Don't publish or commit it with the document unless the user wants
-  the review history kept.
+- `<project root>/.rewriter/` is review scaffolding. It ignores itself in git (it holds a `.gitignore`), and
+  it is gone once no review is in progress: never add it to a commit, and don't remove it by hand.
 - One review per document: a spec and its plan are two reviews, each with its own `serve` and `wait`.
 
 ## UI (for reference when the author asks)

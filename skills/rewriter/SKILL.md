@@ -219,7 +219,9 @@ To comment, select text, or use the `+` beside a block, or "General comment". Th
 **Submit round** opens a dialog with the count of items for Claude and a note. **AI review** opens a
 dialog with a panel of the reviewers that will run (the last panel used on this document is preloaded), a
 library (the author's saved reviewers, then the built-in starters), and an editor for the selected
-reviewer: its description, its model, and buttons to use it as is or to save the change to the library.
+reviewer: its description, its model, and buttons to use it as is or to save the change to the library. **Export**
+downloads the author's library as `reviewers.json` for sharing (someone else saves it as their own library
+file), and **?** explains how a review runs.
 The author can delete an own comment until Claude has answered it. While a round is with you the UI is
 locked and says so: "Waiting for Claude" (`submitted`) or "Claude is working" (`preparing`). It unlocks
 when you `publish`. The "Changes since round N" toggle

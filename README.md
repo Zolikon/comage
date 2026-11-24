@@ -69,6 +69,13 @@ edit it by hand:
 { "library": [{ "persona": "DBA", "background": "Owns the production database. Looks at migrations and query cost.", "model": "sonnet" }] }
 ```
 
+To share your reviewers, press **Export** above the library: it downloads `reviewers.json`. The other
+person saves it as their own `~/.claude/rewriter/reviewers.json`, or copies the entries they want into
+theirs. There is no import button yet.
+
+The panel has no upper limit, but every reviewer is a separate subagent run; 2–5 usually cover a document.
+The **?** in the dialog explains how a review runs.
+
 The starters are in `reviewers.default.json`, grouped by document type. That grouping only matters when you
 ask Claude in chat for "the default panel".
 

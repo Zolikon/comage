@@ -160,3 +160,41 @@ test('server: save, shadowing, remove, odd names, guards', async () => {
     assert.equal(await listed('DBA'), undefined);
   } finally { server.close(); }
 });
+
+test('server: export downloads the library as a file another person can drop in', async () => {
+  const f = userFile();
+  const dir = mkdtempSync(join(tmpdir(), 'rw-'));
+  const spec = join(dir, 'spec.md');
+  writeFileSync(spec, '# Spec\n\nThe service stores widgets.\n');
+  m.init(spec, { type: 'spec' });
+  m.publish(spec);
+  const server = createServer(createHandler(spec));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/api/reviewers/export`;
+  try {
+    let res = await fetch(url);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { library: [] }); // nothing saved yet: still a valid library file
+
+    const mine = { spec: [{ persona: 'DBA', background: 'Owns the database.', focus: ['Migrations'], model: 'sonnet', enabled: false }], library: [{ persona: 'Sec', background: 'Auth holes.' }] };
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, JSON.stringify(mine));
+    res = await fetch(url);
+    assert.equal(res.headers.get('content-disposition'), 'attachment; filename="reviewers.json"');
+    assert.match(res.headers.get('content-type'), /^application\/json/);
+    const text = await res.text();
+    assert.deepEqual(JSON.parse(text), mine); // everything the author keeps, as they keep it
+    assert.ok(text.includes('\n  "spec"'), 'pretty-printed, so it can be read and edited by hand');
+
+    // the exported file works as someone else's library
+    process.env.REWRITER_REVIEWERS = join(dirname(f), 'theirs.json');
+    writeFileSync(process.env.REWRITER_REVIEWERS, text);
+    assert.equal(find('Sec').source, 'user');
+    process.env.REWRITER_REVIEWERS = f;
+
+    writeFileSync(f, '{ broken');
+    res = await fetch(url);
+    assert.equal(res.status, 400);
+    assert.ok((await res.json()).error.includes(f));
+  } finally { server.close(); }
+});

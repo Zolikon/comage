@@ -875,6 +875,12 @@ async function openReviewDialog() {
     toast('Removed from your library');
   };
 
+  // The author's saved reviewers as a file: someone else saves it as their own ~/.claude/rewriter/reviewers.json.
+  const exportLibrary = () => {
+    if (!reg.reviewers.some((r) => r.source === 'user')) { toast('Your library is empty. Save a reviewer first.', true); return; }
+    h('a', { href: '/api/reviewers/export', download: 'reviewers.json' }).click();
+  };
+
   const drawActions = () => {
     const r = sel.isNew ? null : byName(sel.persona);
     const dirty = Boolean(r) && (sel.desc.trim() !== storedDesc(r) || sel.model !== (r.model || ''));
@@ -912,8 +918,10 @@ async function openReviewDialog() {
       ...(panel.length ? panel.map((p) => h('div', { class: `rv-item${sel && sel.persona === p.persona ? ' on' : ''}`, onclick: () => openFromPanel(p.persona) },
         h('span', { class: 'rv-name' }, p.persona), h('span', { class: 'rv-tag' }, modelLabel(p.model)),
         h('button', { class: 'small ghost', title: 'Remove from the panel', onclick: (e) => { e.stopPropagation(); panel = panel.filter((x) => x !== p); touched = true; draw(); } }, '✕')))
-        : [h('p', { class: 'muted rv-empty' }, 'No reviewers yet. Pick one from the library or create a new one.')]),
-      h('div', { class: 'rv-label' }, 'Library'),
+        : [h('p', { class: 'muted rv-empty' }, 'No reviewers in the panel yet. Add one or more from the library, or create your own.')]),
+      h('p', { class: 'muted rv-hint' }, 'Each reviewer runs as its own subagent. There is no upper limit, but 2–5 usually cover a document; every extra one costs time and tokens.'),
+      h('div', { class: 'rv-label rv-label-row' }, 'Library',
+        h('button', { class: 'small ghost', title: 'Download your saved reviewers as reviewers.json, to share', onclick: exportLibrary }, 'Export')),
       // A reviewer that is in the panel opens as the panel will run it, wherever it is clicked.
       ...library.map((r) => h('div', { class: `rv-item${on(r.persona)}`, onclick: () => (inPanel(r.persona) ? openFromPanel(r.persona) : openStored(r.persona)) },
         h('span', { class: 'rv-check' }, inPanel(r.persona) ? '✓' : ''),
@@ -940,10 +948,23 @@ async function openReviewDialog() {
     };
   });
 
+  const sev = (name, means) => h('li', {}, h('span', { class: `pill sev sev-${name}` }, name), ` ${means}`);
+  const help = h('div', { class: 'rv-help', hidden: true },
+    h('ol', {},
+      h('li', {}, "Every reviewer in the panel runs as its own subagent, all at the same time, each on the model you picked. They read the whole document and don't see each other's findings."),
+      h('li', {}, 'Each one reports what it finds from its own angle, and gives every finding a severity:',
+        h('ul', {}, sev('BLOCKER', "can't go ahead as written"), sev('MAJOR', 'a real problem'), sev('MINOR', 'worth fixing'), sev('NITPICK', 'taste')),
+        'A reviewer with nothing to say reports nothing.'),
+      h('li', {}, 'Claude merges findings that make the same point about the same text into one comment. It names every reviewer who raised it and keeps the highest severity. Opposing views stay separate.'),
+      h('li', {}, 'All findings arrive together, as comments in the next round. The document itself is not changed.'),
+      h('li', {}, 'You approve, decline or ignore each comment, then press Submit round to have Claude fix what you approved.')));
+  const helpBtn = h('button', { class: 'ghost small', title: 'How an AI review works', onclick: () => { help.hidden = !help.hidden; } }, '?');
+
   draw();
   showDialog(
-    h('h3', {}, 'AI review'),
+    h('h3', { class: 'rv-title' }, 'AI review', helpBtn),
     h('p', { class: 'muted' }, 'The reviewers in the panel read the document as it is now. Their findings arrive as comments in the next round.'),
+    help,
     toFix ? h('p', { class: 'muted' }, `Your ${toFix} pending item(s) stay as they are until you press Submit round.`) : null,
     h('div', { class: 'rv-panes' }, left, right), note,
     h('div', { class: 'row' }, h('button', { onclick: closeSubmit }, 'Cancel'), send));

@@ -43,8 +43,15 @@ puts the skill in `~/.claude/skills/rewriter` with its paths pointing at that ap
 /comage:rewriter docs/specs/auth.md
 ```
 
-or just ask: "review docs/specs/auth.md in ReWriter". Claude opens the UI and waits. Comment, press
-**Submit round**, and pick "Fix only" or "Fix, then AI review".
+You rarely need to type that. Claude opens ReWriter on its own after it writes a spec, plan or article
+draft for you, or when you ask for a review ("review docs/specs/auth.md", "review it with a DBA and a
+security reviewer").
+
+Each round ends with one of two buttons:
+
+- **Submit round**: Claude acts on your comments and on your decisions about reviewer comments.
+- **AI review**: the reviewers you pick, each on the model you pick, read the document and post their
+  findings. Nothing is fixed in that round; your own pending items wait for your next **Submit round**.
 
 Review state is stored next to the document in `.rewriter/`.
 
@@ -57,7 +64,7 @@ Add your own in `~/.claude/rewriter/reviewers.json`, same shape:
 { "spec": [{ "persona": "DBA", "background": "Owns the production database.", "focus": ["Migrations", "Query cost"], "model": "sonnet" }] }
 ```
 
-Reviewers created in the Submit dialog are saved with that review and can be reused in later rounds.
+Reviewers created in the AI review dialog are saved with that review and can be reused in later rounds.
 
 ## Layout
 

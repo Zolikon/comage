@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as m from '../lib/model.mjs';
 import { createHandler, startServer } from '../lib/server.mjs';
-import { fakeSession, tmpArticle } from './helpers.mjs';
+import { fakeSession, stateDir, tmpArticle, tmpProject } from './helpers.mjs';
 import { listRunning, runningDir } from '../lib/running.mjs';
 
 async function boot() {
@@ -39,7 +39,7 @@ test('state, round gating, decisions, static guards', async () => {
     // static
     assert.equal((await fetch(`${base}/lib/text.mjs`)).status, 200);
     assert.equal((await fetch(`${base}/ui/..%2f..%2frewriter.mjs`)).status, 403);
-    assert.equal((await fetch(`${base}/.rewriter/review.json`)).status, 404);
+    assert.equal((await fetch(`${base}/.rewriter/reviews/index.md/review.json`)).status, 404);
     assert.equal((await post('/api/submit', {})).status, 200);
     assert.equal(m.load(dir).rounds[0].status, 'submitted');
   } finally { server.close(); }
@@ -65,7 +65,7 @@ const freePort = () => new Promise((res) => {
   const s = createServer();
   s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => res(port)); });
 });
-const record = (dir) => join(dir, '.rewriter', 'server.json');
+const record = (dir) => join(stateDir(dir), 'server.json');
 const DEAD_PID = 2147483646;
 
 async function serve(dir, opts = {}) {
@@ -366,9 +366,27 @@ test('approving in the UI closes the review and stops its server', async () => {
     assert.equal(res.status, 200);
     assert.equal((await res.json()).status, 'approved');
     await stopped(s);
-    assert.equal(existsSync(record(dir)), false);
     assert.deepEqual(await listRunning({ session: 'sess-a' }), []);
-    assert.equal(m.load(dir).rounds.at(-1).request.note, 'final');
+    // The review is over, so nothing of it stays: not its state, not the folders that held it.
+    assert.throws(() => m.load(dir), (e) => e.status === 404);
+    assert.equal(existsSync(join(dir, '.rewriter')), false);
+    assert.equal(existsSync(join(dir, 'index.md')), true);
+  } finally { await s.close(); }
+});
+
+test('after an approval inside a project, the project holds no trace of ReWriter', async () => {
+  const root = tmpProject();
+  mkdirSync(join(root, 'docs'));
+  const doc = join(root, 'docs', 'spec.md');
+  writeFileSync(doc, '# Spec\n\nText.\n');
+  m.init(doc);
+  const s = await serve(doc, { port: await freePort() });
+  try {
+    m.publish(doc);
+    assert.equal(existsSync(join(root, '.rewriter', 'reviews', 'docs', 'spec.md', 'review.json')), true);
+    assert.equal((await post(s, '/api/approve', {})).status, 200);
+    await stopped(s);
+    assert.equal(existsSync(join(root, '.rewriter')), false);
   } finally { await s.close(); }
 });
 
@@ -414,19 +432,26 @@ test('approve is refused when the round is not open, and the server keeps runnin
   } finally { await s.close(); }
 });
 
-test('a server started on an approved review shows it and does not stop by itself', async () => {
+test('a review started inside the goodbye second is not removed by the old server', async () => {
   const dir = reviewed();
-  m.publish(dir);
-  m.approve(dir); // no server running: nothing to stop
   const s = await serve(dir, { port: await freePort() });
   try {
-    // The state file is written again (any tool may touch it): still nothing that should stop the server.
-    const file = join(dir, '.rewriter', 'review.json');
-    writeFileSync(file, readFileSync(file, 'utf8'));
-    await pause(1500);
-    const state = await (await fetch(`${s.url}api/state`)).json();
-    assert.equal(state.review.rounds.at(-1).status, 'approved');
+    m.publish(dir);
+    await pause(300);
+    assert.equal((await post(s, '/api/approve', {})).status, 200);
+    m.init(dir); // the document is reviewed again at once
+    m.addComments(dir, [{ severity: 'MINOR', body: 'belongs to the new review' }]);
+    await stopped(s);
+    assert.equal(m.load(dir).comments.length, 1, 'the new review is still there');
   } finally { await s.close(); }
+});
+
+test('a server refuses to start on an approved review', async () => {
+  const dir = reviewed();
+  m.publish(dir);
+  m.approve(dir);
+  await assert.rejects(serve(dir, { port: await freePort() }), (e) => e.status === 409 && /was approved/.test(e.message));
+  assert.equal(existsSync(record(dir)), false, 'and leaves no server record behind');
 });
 
 test('POST /api/approve sits behind the same guards as the other writes', async () => {
@@ -440,42 +465,25 @@ test('POST /api/approve sits behind the same guards as the other writes', async 
   } finally { await s.close(); }
 });
 
-test('a server that was started on an approved review stops when the review is approved again', async () => {
+test('the server is closed before the review is removed, so no tab is sent to a state that is gone', async () => {
   const dir = reviewed();
-  m.publish(dir);
-  m.approve(dir);
-  const s = await serve(dir, { port: await freePort() }); // the author asked to see the closed review
+  const s = await serve(dir, { port: await freePort() });
+  const tab = new AbortController();
   try {
-    m.reopenReview(dir);
     m.publish(dir);
+    const reader = (await fetch(`${s.url}api/events`, { signal: tab.signal })).body.getReader();
+    await reader.read(); // the reload every tab gets when it connects
     await pause(300);
-    assert.equal((await post(s, '/api/approve', {})).status, 200);
+    m.approve(dir);
+    const seen = [];
+    for (;;) { // read until the server hangs up
+      let chunk;
+      try { chunk = await reader.read(); } catch { break; }
+      if (chunk.done) break;
+      seen.push(existsSync(join(stateDir(dir), 'review.json')));
+    }
+    assert.ok(seen.length >= 1, 'the tab was told about the approval');
+    assert.ok(seen.every(Boolean), 'every time the tab was told to reload, the state was still there to load');
     await stopped(s);
-  } finally { await s.close(); }
-});
-
-test('a review reopened right after it was approved keeps its server', async () => {
-  const dir = reviewed();
-  const s = await serve(dir, { port: await freePort() });
-  try {
-    m.publish(dir);
-    await pause(300);
-    assert.equal((await post(s, '/api/approve', {})).status, 200);
-    m.reopenReview(dir); // within the second the server takes to say goodbye
-    await pause(3500);
-    assert.equal((await fetch(`${s.url}api/ping`)).status, 200);
-  } finally { await s.close(); }
-});
-
-test('an approved review shows the version that was approved, whatever happened to the file since', async () => {
-  const dir = reviewed();
-  m.publish(dir);
-  m.approve(dir);
-  writeFileSync(join(dir, 'index.md'), '# Rewritten\n\nNothing of the approved text is left.\n');
-  const s = await serve(dir, { port: await freePort() });
-  try {
-    const { article } = await (await fetch(`${s.url}api/state`)).json();
-    assert.match(article.plain, /The cat ran/);
-    assert.doesNotMatch(article.plain, /Nothing of the approved text/);
-  } finally { await s.close(); }
+  } finally { tab.abort(); await s.close(); }
 });

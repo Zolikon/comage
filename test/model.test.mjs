@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import * as m from '../lib/model.mjs';
-import { tmpArticle } from './helpers.mjs';
+import { stateDir, tmpArticle, tmpProject } from './helpers.mjs';
 
 function opened(items = [{ severity: 'MAJOR', body: 'b1', quote: 'The cat ran' }]) {
   const dir = tmpArticle();
@@ -17,7 +17,7 @@ test('init creates round 1 preparing', () => {
   const dir = tmpArticle();
   const s = m.init(dir);
   assert.deepEqual(s.rounds.map((r) => [r.n, r.status]), [[1, 'preparing']]);
-  assert.ok(existsSync(join(dir, '.rewriter', 'review.json')));
+  assert.ok(existsSync(join(stateDir(dir), 'review.json')));
   assert.throws(() => m.init(dir), (e) => e.status === 409);
 });
 
@@ -72,7 +72,7 @@ test('publish snapshots and opens', () => {
   const { dir } = opened();
   const s = m.load(dir);
   assert.equal(s.rounds[0].status, 'open');
-  assert.equal(readFileSync(join(dir, '.rewriter', 'rounds', '1.md'), 'utf8'), readFileSync(join(dir, 'index.md'), 'utf8'));
+  assert.equal(readFileSync(join(stateDir(dir), 'rounds', '1.md'), 'utf8'), readFileSync(join(dir, 'index.md'), 'utf8'));
   assert.throws(() => m.publish(dir), (e) => e.status === 409);
   assert.throws(() => m.addComments(dir, [{ severity: 'MAJOR', body: 'x' }]), (e) => e.status === 409);
 });
@@ -285,7 +285,7 @@ test('callers without a session id, and rounds without one, are not held back', 
 test('an update waits for the review lock instead of overwriting a concurrent writer', () => {
   const dir = tmpArticle();
   m.init(dir);
-  const lock = join(dir, '.rewriter', 'review.lock');
+  const lock = join(stateDir(dir), 'review.lock');
   writeFileSync(lock, String(process.pid)); // a live holder
   assert.throws(() => m.addComments(dir, [{ severity: 'MINOR', body: 'x' }], { lockTimeout: 80 }), (e) => e.status === 503);
   assert.equal(m.load(dir).comments.length, 0);
@@ -329,7 +329,7 @@ test('approve is refused unless the round is open', () => {
   refused(() => m.approve(done)); // approved already
 });
 
-test('an approved review refuses everything but reopen, and says how to go on', () => {
+test('an approved review refuses everything, and says it is closed', () => {
   const { dir } = opened();
   m.approve(dir);
   refused(() => m.addComments(dir, [{ severity: 'MINOR', body: 'late' }]));
@@ -340,28 +340,91 @@ test('an approved review refuses everything but reopen, and says how to go on', 
   refused(() => m.setDecision(dir, 'c1', { type: 'approve' }));
   refused(() => m.userComment(dir, { anchor: { kind: 'article' }, body: 'late' }));
   refused(() => m.claim(dir, { session: 's1' }));
-  assert.throws(() => m.nextRound(dir, { session: 's1' }), /approved and closed\. `reopen` starts a new round/);
+  assert.throws(() => m.nextRound(dir, { session: 's1' }), /The review is approved and closed\./);
+  assert.doesNotThrow(() => m.reopen, 'reopening a comment is still a thing');
+  assert.equal(m.reopenReview, undefined, 'reopening a review is not: an approved review is deleted');
   assert.equal(m.load(dir).comments[0].status, 'open', 'approving resolves nothing');
 });
 
-test('reopen starts a new round for the caller, only on an approved review', () => {
-  const dir = tmpOpen();
-  refused(() => m.reopenReview(dir, { session: 's1' }));
-  m.approve(dir);
-  const r = m.reopenReview(dir, { session: 's1' });
-  assert.deepEqual([r.n, r.status, r.session], [2, 'preparing', 's1']);
-  assert.equal(m.load(dir).rounds[0].status, 'approved');
-  refused(() => m.addComments(dir, [{ severity: 'MINOR', body: 'x' }], { session: 's2' })); // the round is s1's
+// ---- an approved review is over, so its state goes: nothing of ReWriter stays in a project with no review ----
+
+function reviewedIn(root, rel) {
+  const doc = join(root, rel);
+  mkdirSync(dirname(doc), { recursive: true });
+  writeFileSync(doc, '# Doc\n\nSome text.\n');
+  m.init(doc);
+  m.publish(doc);
+  return doc;
+}
+
+test('removeReview removes the review, its empty parents and the .rewriter folder it emptied', () => {
+  const root = tmpProject();
+  const doc = reviewedIn(root, join('docs', 'a', 'spec.md'));
+  assert.equal(m.removeReview(doc), true);
+  assert.equal(existsSync(join(root, '.rewriter')), false);
+  assert.equal(existsSync(doc), true, 'the document is not ReWriter\'s to remove');
+  assert.equal(m.removeReview(doc), false, 'nothing left to remove');
 });
 
-test('a reopened review can be approved again; both approvals stay in the history', () => {
-  const dir = tmpOpen();
+test('removeReview leaves another review under the same root, and its folders, alone', () => {
+  const root = tmpProject();
+  const gone = reviewedIn(root, join('docs', 'a', 'spec.md'));
+  const stays = reviewedIn(root, join('docs', 'plan.md'));
+  m.removeReview(gone);
+  assert.equal(existsSync(stateDir(gone)), false);
+  assert.equal(existsSync(join(root, '.rewriter', 'reviews', 'docs', 'a')), false, 'the emptied folder above it goes too');
+  assert.equal(m.load(stays).rounds.length, 1);
+  assert.equal(existsSync(join(root, '.rewriter', '.gitignore')), true);
+});
+
+test('removeReview keeps a .rewriter folder that holds anything else', () => {
+  const root = tmpProject();
+  const doc = reviewedIn(root, 'spec.md');
+  mkdirSync(join(root, '.rewriter', 'old.md'));
+  writeFileSync(join(root, '.rewriter', 'old.md', 'review.json'), '{}'); // another document's review, old layout
+  m.removeReview(doc);
+  assert.equal(existsSync(join(root, '.rewriter', 'old.md', 'review.json')), true);
+  assert.equal(existsSync(join(root, '.rewriter', 'reviews')), false);
+});
+
+test('removeReview keeps a .gitignore that is not the one ReWriter wrote', () => {
+  const root = tmpProject();
+  const doc = reviewedIn(root, 'spec.md');
+  writeFileSync(join(root, '.rewriter', '.gitignore'), 'rounds/\n');
+  m.removeReview(doc);
+  assert.equal(readFileSync(join(root, '.rewriter', '.gitignore'), 'utf8'), 'rounds/\n');
+});
+
+test('removeReview refuses a state folder outside <root>/.rewriter/reviews', () => {
+  const root = tmpProject();
+  const doc = reviewedIn(root, 'spec.md');
+  const elsewhere = join(root, 'precious');
+  mkdirSync(elsewhere);
+  writeFileSync(join(elsewhere, 'review.json'), '{}');
+  assert.throws(() => m.removeReview({ ...m.target(doc), stateDir: elsewhere }), /not a review folder/);
+  assert.equal(existsSync(join(elsewhere, 'review.json')), true);
+});
+
+test('locate sweeps an approval older than a minute and keeps a fresh one', () => {
+  const root = tmpProject();
+  const doc = reviewedIn(root, 'spec.md');
+  m.approve(doc);
+  m.locate(doc, { log: () => {} });
+  assert.equal(m.load(doc).rounds[0].status, 'approved', 'a fresh approval is still there for whoever is waiting');
+  const file = join(stateDir(doc), 'review.json');
+  const state = JSON.parse(readFileSync(file, 'utf8'));
+  state.rounds[0].approvedAt = new Date(Date.now() - 61000).toISOString();
+  writeFileSync(file, JSON.stringify(state));
+  m.locate(doc, { log: () => {} });
+  assert.throws(() => m.load(doc), (e) => e.status === 404);
+  assert.equal(existsSync(join(root, '.rewriter')), false);
+});
+
+test('init over an approved review starts a new one', () => {
+  const { dir } = opened();
   m.approve(dir);
-  m.reopenReview(dir);
-  m.publish(dir);
-  m.approve(dir, { note: 'again' });
-  assert.deepEqual(m.load(dir).rounds.map((r) => r.status), ['approved', 'approved']);
-  assert.equal(m.pending(dir).request.note, 'again');
+  const state = m.init(dir, { type: 'plan' });
+  assert.deepEqual([state.rounds.length, state.rounds[0].status, state.comments.length, state.docType], [1, 'preparing', 0, 'plan']);
 });
 
 test('pending on an approved review: nothing to act on, and how much was left', () => {
@@ -399,18 +462,49 @@ test('notActedOn counts what the author still had open, not what Claude already 
   assert.equal(m.pending(dir).notActedOn, 1);
 });
 
-test('after reopen, what the approval left open waits for the author: nothing is asked of Claude', () => {
-  const { dir } = opened();
-  m.setDecision(dir, 'c1', { type: 'approve' });
-  m.userComment(dir, { anchor: { kind: 'article' }, body: 'mine' });
-  m.approve(dir);
-  m.reopenReview(dir, { session: 's1' });
-  const p = m.pending(dir, { session: 's1' });
-  assert.deepEqual([p.roundStatus, p.request.mode, p.needsAction, p.held], ['preparing', 'approve', [], 2]);
-});
-
 test('claim on an approved review says the review is closed', () => {
   const dir = tmpOpen();
   m.approve(dir);
-  assert.throws(() => m.claim(dir, { session: 's1' }), /approved and closed\. `reopen` starts a new round/);
+  assert.throws(() => m.claim(dir, { session: 's1' }), /The review is approved and closed\./);
+});
+
+// The removal comes a second after the approval. Whatever happened in that second must survive it.
+test('removeApproved removes the approval it was asked about, and nothing that took its place', () => {
+  const { dir } = opened();
+  const at = m.approve(dir).approvedAt;
+  m.init(dir); // the document is reviewed again before the old review was cleaned up
+  m.addComments(dir, [{ severity: 'MINOR', body: 'new review, new comment' }]);
+  assert.equal(m.removeApproved(dir, at), false);
+  assert.equal(m.load(dir).comments.length, 1);
+
+  const other = tmpOpen();
+  assert.equal(m.removeApproved(other, 'some other time'), false, 'open review: not approved, not removed');
+  const at2 = m.approve(other).approvedAt;
+  assert.equal(m.removeApproved(other, at2), true);
+  assert.throws(() => m.load(other), (e) => e.status === 404);
+});
+
+test('a document whose name starts with two dots can be approved and removed', () => {
+  const root = tmpProject();
+  const doc = reviewedIn(root, '..draft.md');
+  m.approve(doc);
+  assert.equal(m.removeReview(doc), true);
+  assert.equal(existsSync(join(root, '.rewriter')), false);
+});
+
+test('init over an approved review works when that review was what made the folder a root', () => {
+  const top = tmpProject();
+  rmSync(join(top, '.git'), { recursive: true }); // no git: the root is whatever folder holds reviews
+  mkdirSync(join(top, 'sub'));
+  writeFileSync(join(top, 'first.md'), '# First\n');
+  m.init(join(top, 'first.md')); // makes <top> a root
+  const doc = join(top, 'sub', 'doc.md');
+  writeFileSync(doc, '# Doc\n');
+  m.init(doc);
+  m.publish(doc);
+  m.removeReview(join(top, 'first.md')); // …and now only this document's review keeps it one
+  m.approve(doc);
+  const state = m.init(doc);
+  assert.equal(state.rounds[0].status, 'preparing');
+  assert.equal(m.load(doc).rounds.length, 1);
 });

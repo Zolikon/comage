@@ -51,7 +51,6 @@ header#top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; ali
 .brand { font-weight: 700; letter-spacing: .2px; }
 .brand span { color: var(--link); }
 .title { font-size: 17px; font-weight: 650; letter-spacing: -.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.toggle { display: flex; gap: 4px; align-items: center; font-size: 13px; cursor: pointer; user-select: none; }
 .counts { display: flex; gap: 6px; }
 .pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
 .pill.sev { color: #fff; border: 0; }
@@ -113,8 +112,6 @@ mark.rw-hl.rw-active { outline: 2px solid currentColor; outline-offset: 1px; box
 .rw-el { outline: 3px solid var(--nitpick); outline-offset: 3px; cursor: pointer; }
 .rw-el.sev-MINOR { outline-color: var(--minor); } .rw-el.sev-MAJOR { outline-color: var(--major); }
 .rw-el.sev-BLOCKER { outline-color: var(--blocker); } .rw-el.sev-USER { outline-color: var(--user); outline-style: dashed; }
-ins.rw-ins { background: var(--ins-bg); text-decoration: none; border-radius: 2px; }
-.rw-del { display: inline-block; width: 0; height: 1.05em; border-left: 2px solid var(--del); margin: 0 1px; vertical-align: text-bottom; cursor: help; }
 
 /* bubbles */
 .bubble { position: absolute; max-width: 150px; height: 26px; line-height: 26px; border-radius: 13px 13px 13px 3px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transform-origin: left center; font-size: 11px; font-weight: 700; color: #fff; cursor: pointer; padding: 0 7px; box-shadow: 0 1px 3px rgba(0,0,0,.25); border: 0; background: var(--nitpick); transition: transform .08s; }

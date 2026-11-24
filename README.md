@@ -22,21 +22,6 @@ claude --plugin-dir path/to/comage
 
 Requires Node 22. There is nothing to `npm install`.
 
-### Without the plugin: installer
-
-`install.mjs` installs components from this repo. The app and its Claude skill always go in together.
-
-```bash
-node install.mjs              # pick components interactively
-node install.mjs rewriter     # or name them (--all for everything, --list to see them)
-node install.mjs --uninstall rewriter
-```
-
-`rewriter` installs the app to `~/.local/share/comage/rewriter`, links `rewriter` into `~/.local/bin`, and
-puts the skill in `~/.claude/skills/rewriter` with its paths pointing at that app. Override with
-`--app-dir`, `--bin-dir`, `--skills-dir`. Don't use it together with the plugin: both would provide
-`/rewriter`.
-
 ## Use
 
 ```
@@ -54,10 +39,15 @@ Each round ends with one of three buttons:
   findings. Nothing is fixed in that round; your own pending items wait for your next **Submit round**.
 - **Approve**: the document is final as it stands. The review is closed, its server stops, its browser tab
   closes (where the browser lets a page close its own tab; otherwise the page says it can be closed), and
-  Claude goes on with what the document was for. Anything still open is left as it is (the dialog tells you how much).
-  Ask Claude to reopen the review if the document has to change after all.
+  Claude goes on with what the document was for. Anything still open is not acted on (the dialog tells you
+  how much), and the review's state is removed. If the document has to change after all, it gets a new
+  review.
 
-Review state is stored next to the document in `.rewriter/`.
+Review state is stored in `.rewriter/` at the project root: the git repository the document is in, or
+the document's own folder when it is in none. The folder ignores itself in git, so there is nothing to add
+to a `.gitignore`. It holds reviews in progress only: an approved review is removed, and when nothing is
+under review the folder is gone. Reviews from versions before 1.4.0, which kept their state beside each
+document, move to the project root the first time they are used.
 
 ## Several sessions at once
 
@@ -101,6 +91,8 @@ person saves it as their own `~/.claude/rewriter/reviewers.json`, or copies the 
 theirs. There is no import button yet.
 
 The panel has no upper limit, but every reviewer is a separate subagent run; 2–5 usually cover a document.
+Reviewers run as the plugin's own `comage:reviewer` agent: it can read files and search the web to check
+what the document says, and it cannot edit files or run commands.
 The **?** in the dialog explains how a review runs.
 
 The starters are in `reviewers.default.json`, grouped by document type. That grouping only matters when you
@@ -112,11 +104,11 @@ ask Claude in chat for "the default panel".
 |---|---|
 | `.claude-plugin/` | plugin and marketplace manifests |
 | `skills/rewriter/` | the skill (`SKILL.md`) and the reviewer prompt template |
+| `agents/reviewer.md` | the subagent every reviewer runs as: review rules, output format, read-only tools |
 | `bin/rewriter` | CLI launcher, on Claude's `PATH` while the plugin is enabled |
 | `rewriter.mjs`, `lib/` | CLI, review model, local server, reviewer registry |
 | `ui/` | browser UI |
 | `vendor/` | bundled `marked` (MIT), so no install step |
-| `install.mjs` | component installer (app + skill, no plugin needed) |
 | `test/` | `npm test` |
 
 ## License

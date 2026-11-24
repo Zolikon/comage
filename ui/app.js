@@ -1,4 +1,4 @@
-import { normalizeWs, findQuote, makeTextAnchor, pageTitle, wordDiff } from '/lib/text.mjs';
+import { normalizeWs, findQuote, makeTextAnchor, pageTitle } from '/lib/text.mjs';
 
 const SEVS = ['BLOCKER', 'MAJOR', 'MINOR', 'NITPICK'];
 const SEV_RANK = { USER: 0, NITPICK: 1, MINOR: 2, MAJOR: 3, BLOCKER: 4 };
@@ -7,8 +7,8 @@ const docEl = $('#doc');
 const wrapEl = $('#doc-wrap');
 
 const ui = {
-  data: null, view: null, base: null, baseRound: null, viewRound: null,
-  diff: true, sev: new Set(), status: 'active', reviewer: '',
+  data: null, view: null, viewRound: null,
+  sev: new Set(), status: 'active', reviewer: '',
   selected: null, form: null, // form: { id, kind: approve|decline|reply|new, text, anchor? }
   plain: '', order: [], loc: new Map(), snapCache: new Map(), hoverBlock: null, selAnchor: null,
 };
@@ -84,11 +84,6 @@ async function load() {
         const rounds = ui.data.review.rounds;
         if (ui.viewRound !== null && !rounds.some((r) => r.n === ui.viewRound && r.publishedAt)) ui.viewRound = null;
         ui.view = isPast() ? await snapshot(ui.viewRound) : ui.data.article;
-        const b = viewedRound() - 1;
-        ui.baseRound = b >= 1 && rounds.find((r) => r.n === b)?.publishedAt ? b : null;
-        ui.base = ui.baseRound ? await snapshot(ui.baseRound) : null;
-        // Diff base text comes from the same DOM walk as the live article, so both sides agree.
-        ui.basePlain = ui.base ? buildIndex(new DOMParser().parseFromString(`<body>${ui.base.html}</body>`, 'text/html').body).plain : '';
         render();
         // Approved while this tab was showing the review (here, in another tab, or by Claude for the
         // author): the tab is done. One that opens an already approved review is there to show it.
@@ -138,33 +133,27 @@ function buildIndex(root) {
       plain += n.data[i]; map.push(raw);
     }
   }
-  return { nodes, plain, map, rawLen: raw };
+  return { nodes, plain, map };
 }
 
-// Wrap raw intervals [{a,b,ids?,ins?}] and insert deletion markers [{at,text}] in one pass.
-function applyMarks(index, intervals, points) {
+// Wrap raw intervals [{a,b,id}] in comment highlights.
+function applyMarks(index, intervals) {
   for (const info of index.nodes) {
     const s0 = info.rawStart; const e0 = s0 + info.len;
     const iv = intervals.filter((x) => x.a < e0 && x.b > s0);
-    const isLast = info === index.nodes[index.nodes.length - 1];
-    const pts = points.filter((p) => (p.at >= s0 && p.at < e0) || (isLast && p.at === e0));
-    if (!iv.length && !pts.length) continue;
-    // Whitespace between <tr>/<td>/<li> must not get <mark>/<ins> wrappers (invalid structure).
+    if (!iv.length) continue;
+    // Whitespace between <tr>/<td>/<li> must not get <mark> wrappers (invalid structure).
     if (!info.node.data.trim() && info.node.parentElement?.matches('table, thead, tbody, tfoot, tr, ul, ol')) continue;
     const cuts = new Set([s0, e0]);
     for (const x of iv) { cuts.add(Math.max(s0, x.a)); cuts.add(Math.min(e0, x.b)); }
-    for (const p of pts) cuts.add(p.at);
     const bounds = [...cuts].sort((a, b) => a - b);
     const frag = document.createDocumentFragment();
-    for (let k = 0; k < bounds.length; k++) {
+    for (let k = 0; k < bounds.length - 1; k++) {
       const s = bounds[k];
-      for (const p of pts.filter((q) => q.at === s)) frag.append(h('span', { class: 'rw-del', title: `Removed: ${p.text}` }));
-      if (k === bounds.length - 1) break;
       const e = bounds[k + 1];
       let el = document.createTextNode(info.node.data.slice(s - s0, e - s0));
       const cover = iv.filter((x) => x.a <= s && x.b >= e);
-      if (cover.some((x) => x.ins)) el = h('ins', { class: 'rw-ins' }, el);
-      const ids = cover.filter((x) => x.id).map((x) => x.id);
+      const ids = cover.map((x) => x.id);
       if (ids.length) {
         const cs = ids.map(byId);
         const top = cs.reduce((m, c) => (SEV_RANK[sevKey(c)] > SEV_RANK[sevKey(m)] ? c : m), cs[0]);
@@ -232,10 +221,6 @@ function render() {
   st.textContent = isPast() ? 'snapshot' : ({ submitted: 'Waiting for Claude', preparing: 'Claude is working', approved: 'Approved' }[L.status] || L.status);
   st.className = `pill st-${isPast() ? 'past' : L.status}${withClaude ? ' working' : ''}`;
 
-  $('#diff-wrap').hidden = !ui.base; // no previous round: nothing to diff against
-  $('#diff-toggle').checked = Boolean(ui.base) && ui.diff;
-  $('#diff-label').textContent = ui.base ? `Changes since round ${ui.baseRound}` : 'Changes';
-
   const unresolved = review.comments.filter((c) => c.status !== 'resolved' && c.round <= viewedRound());
   $('#counts').replaceChildren(...[...SEVS, 'USER'].map((s) => {
     const n = unresolved.filter((c) => sevKey(c) === s).length;
@@ -263,7 +248,7 @@ function render() {
   } else if (L.status === 'approved') {
     // The end of the review. Its server stops once it has said so, which is why this page goes quiet.
     info = true;
-    msg = `Approved on ${new Date(L.approvedAt).toLocaleDateString()}. This review is closed and its server has stopped, so this page no longer updates: you can close this tab. To change the document, ask Claude to reopen the review.`;
+    msg = `Approved on ${new Date(L.approvedAt).toLocaleDateString()}. This review is closed and its server has stopped, so this page no longer updates: you can close this tab. To review the document again, ask Claude to start a new review.`;
   }
   banner.hidden = !msg; banner.textContent = msg;
   banner.className = [info ? 'info' : '', withClaude ? 'busy' : ''].join(' ').trim();
@@ -295,18 +280,8 @@ function renderDoc() {
   const index = buildIndex(docEl);
   ui.plain = index.plain;
   const { map } = index;
-  const rawAt = (i) => (i < map.length ? map[i] : index.rawLen);
 
   const intervals = [];
-  const points = [];
-  if (ui.base && ui.diff) {
-    let pos = 0;
-    for (const op of wordDiff(ui.basePlain, index.plain)) {
-      if (op.op === 'del') { points.push({ at: rawAt(pos), text: op.text }); continue; }
-      if (op.op === 'ins') intervals.push({ a: rawAt(op.bStart), b: map[op.bEnd - 1] + 1, ins: true });
-      pos = op.bEnd;
-    }
-  }
 
   ui.loc = new Map();
   const visible = ui.data.review.comments.filter(passes);
@@ -320,7 +295,7 @@ function renderDoc() {
       ui.loc.set(c.id, el ? { kind: 'element', el } : { kind: 'lost' });
     } else ui.loc.set(c.id, { kind: 'article' });
   }
-  applyMarks(index, intervals, points);
+  applyMarks(index, intervals);
   for (const [id, l] of ui.loc) {
     if (l.kind !== 'element') continue;
     const c = byId(id);
@@ -742,7 +717,6 @@ $('#round-select').addEventListener('change', (e) => {
   closePopover(); ui.form = null;
   load();
 });
-$('#diff-toggle').addEventListener('change', (e) => { ui.diff = e.target.checked; render(); });
 $('#status-filter').addEventListener('change', (e) => { ui.status = e.target.value; render(); });
 $('#reviewer-filter').addEventListener('change', (e) => { ui.reviewer = e.target.value; render(); });
 $('#new-general').addEventListener('click', (e) => newComment({ kind: 'article' }, e.target.getBoundingClientRect()));
@@ -1035,7 +1009,6 @@ document.addEventListener('keydown', (e) => {
   if (k === '?') { $('#help').hidden = !$('#help').hidden; return; }
   if (k === 'j') return move(1);
   if (k === 'k') return move(-1);
-  if (k === 'f') { if (ui.base) { ui.diff = !ui.diff; render(); } return; }
   if (k === 'c') { const a = selectionAnchor(); if (a) { e.preventDefault(); newComment(a, window.getSelection().getRangeAt(0).getBoundingClientRect()); } return; }
   if (!c) return;
   if (k === 'a') decide(id, 'approve');

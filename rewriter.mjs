@@ -25,7 +25,7 @@ const USAGE = `ReWriter — local review rounds for markdown documents (articles
   request-review [--file reviewers.json] [--reviewer R]... [--note N]
                                        ask for an AI review for the author (same as the UI's "AI review" button)
   approve   [--note N]                 approve the document as it stands: the review is closed, its UI stops
-  reopen                               start a new round on an approved review; it is this session's
+                                       and its state is removed
   wait      [--timeout seconds]        block until the author ends the round (submits or approves), then print pending
   serve     [--port 4870] [--no-open] [--idle-minutes 120]
                                        start the review UI, or print the URL of the one already running for
@@ -59,6 +59,9 @@ function readJsonFile(f) {
 }
 
 const out = (v) => process.stdout.write(`${JSON.stringify(v, null, 2)}\n`);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// How long an approved review stays before `approve` removes it: the same pause the UI server takes.
+const APPROVED_REMOVE_MS = 1000;
 
 function status(dir, session) {
   const s = m.load(dir);
@@ -68,7 +71,6 @@ function status(dir, session) {
   const sev = m.SEVERITIES.slice().reverse()
     .map((x) => `${x} ${by((c) => c.status !== 'resolved' && c.severity === x)}`).join(', ');
   const review = p.request?.mode === 'review';
-  const reopened = p.request?.mode === 'approve'; // a round being prepared after an approval
   const asked = review
     ? `Author asked for an AI review by: ${p.request.reviewers.map((x) => x.persona + (x.model ? ` [${x.model}]` : '')).join(', ')}.`
     : 'Author asked for fixes.';
@@ -82,12 +84,11 @@ function status(dir, session) {
     ...(p.notActedOn ? [`Left as they were: ${p.notActedOn} item(s) not acted on.`] : []),
     p.otherSession ? `Another Claude session (${p.otherSession}) is working on this round. Next: nothing here, leave the round and the document to it. Only if that session is gone: \`claim\`, then carry on.` : {
       preparing: !p.request ? 'Next: Claude runs `publish` to hand the document to the author.'
-        : reopened ? 'Reopened after approval. Next: Claude makes the change, then `publish`.'
         : review ? `${asked} Next: Claude runs the reviewers, posts their findings with \`add\`, then \`publish\`.`
           : `${asked} Next: Claude acts on the items above, replies, then \`publish\`.`,
-      open: 'Next: author reviews in the UI and presses "Submit round" or "AI review".',
+      open: 'Next: author reviews in the UI and presses "Submit round", "AI review" or "Approve".',
       submitted: `${asked} Next: Claude runs \`next\`, then \`pending\`.`,
-      approved: 'Next: nothing. The author approved this version; the review is closed. `reopen` starts a new round if the document has to change.',
+      approved: 'Next: nothing. The author approved this version; the review is closed and its state is being removed. A document that has to change after all gets a new review (`init`).',
     }[r.status],
   ];
   process.stdout.write(`${lines.join('\n')}\n`);
@@ -106,7 +107,7 @@ async function main() {
     return;
   }
   if (!dirArg) throw new m.RwError('document path required');
-  const dir = m.target(resolve(dirArg));
+  const dir = m.locate(resolve(dirArg)); // a review from an older version is moved to the project root here
   switch (cmd) {
     case 'init': {
       const s = m.init(dir, { article: flags.article, type: flags.type, session });
@@ -131,14 +132,24 @@ async function main() {
       break;
     }
     case 'wait': {
+      // An approved review is removed about a second after the approval, so this looks four times a second:
+      // it must read "approved" while that is still there to read. A review that is not there (approved and
+      // cleaned up before this started or between two looks, or removed elsewhere) is reported as "gone",
+      // not as an error telling the caller to start one: for a document that was under review, no review
+      // means the review is over.
       const deadline = flags.timeout ? Date.now() + Number(flags.timeout) * 1000 : Infinity;
       for (;;) {
-        const s = m.load(dir);
-        if (['submitted', 'approved'].includes(s.rounds[s.rounds.length - 1].status)) break;
+        try {
+          const s = m.load(dir);
+          if (['submitted', 'approved'].includes(s.rounds[s.rounds.length - 1].status)) { out(m.pending(dir, { session })); break; }
+        } catch (e) {
+          if (e.status !== 404) throw e;
+          out({ roundStatus: 'gone' });
+          break;
+        }
         if (Date.now() > deadline) throw new m.RwError('timed out waiting for the author to end the round');
-        await new Promise((r) => setTimeout(r, 1000));
+        await sleep(250);
       }
-      out(m.pending(dir, { session }));
       break;
     }
     case 'add': {
@@ -159,8 +170,17 @@ async function main() {
     case 'next': out(m.nextRound(dir, { session })); break;
     case 'claim': out(m.claim(dir, { session })); break;
     // The author's approval, given in chat: same as the UI's "Approve" button.
-    case 'approve': m.approve(dir, { note: flags.note }); out(m.pending(dir, { session })); break;
-    case 'reopen': out(m.reopenReview(dir, { session })); break;
+    // The review is then over and its state goes. A running UI server does that itself, once it has told
+    // its tabs; with none running it is done here, after the same pause, so that a `wait` in another
+    // session reads the approval first.
+    case 'approve': {
+      const { approvedAt } = m.approve(dir, { note: flags.note });
+      out(m.pending(dir, { session }));
+      const { servedBy } = await import('./lib/server.mjs');
+      // Only this approval is removed: a review started on the document in the meantime is left alone.
+      if (!(await servedBy(dir))) { await sleep(APPROVED_REMOVE_MS); m.removeApproved(dir, approvedAt); }
+      break;
+    }
     case 'publish': out(m.publish(dir, { session })); break;
     case 'status': status(dir, session); break;
     case 'serve': {

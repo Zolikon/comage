@@ -188,7 +188,7 @@ test('AI review is review only: pending items are held, then come back on Submit
   m.addComments(spec, [{ severity: 'MAJOR', body: 'which store?', quote: 'stores widgets' }, { severity: 'MINOR', body: 'say why' }]);
   m.publish(spec);
   m.setDecision(spec, 'c1', { type: 'approve' });
-  m.userReply(spec, 'c2', 'why?');
+  m.setDecision(spec, 'c2', { type: 'decline' });
   const u = m.userComment(spec, { anchor: { kind: 'article' }, body: 'name the store' });
   const r = m.submit(spec, { mode: 'review', reviewers: [{ persona: 'Architect' }], note: 'storage only' });
   assert.deepEqual(r.request, { mode: 'review', aiReview: true, reviewers: [{ persona: 'Architect', model: '' }], note: 'storage only' });
@@ -205,7 +205,7 @@ test('AI review is review only: pending items are held, then come back on Submit
   p = m.pending(spec);
   assert.deepEqual([p.request.mode, p.held, p.carriedOver], ['fix', 0, 1]);
   assert.deepEqual(Object.fromEntries(p.needsAction.map((x) => [x.id, x.why])),
-    { c1: ['approved'], c2: ['user-reply'], [u.id]: ['user-comment'] });
+    { c1: ['approved'], c2: ['declined'], [u.id]: ['user-comment'] });
   assert.equal(m.load(spec).comments[0].decision.type, 'approve');
 });
 

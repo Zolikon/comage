@@ -9,7 +9,7 @@ const wrapEl = $('#doc-wrap');
 const ui = {
   data: null, view: null, viewRound: null,
   sev: new Set(), status: 'active', reviewer: '',
-  selected: null, form: null, // form: { id, kind: approve|decline|reply|new, text, anchor? }
+  selected: null, form: null, // form: { id, kind: approve|new, text, anchor? }
   plain: '', order: [], loc: new Map(), snapCache: new Map(), hoverBlock: null, selAnchor: null,
 };
 
@@ -180,12 +180,16 @@ function findElement(anchor) {
 }
 
 // ---------- filters ----------
+// Set aside by the author for this round: still open, asked again next round.
+const ignoredForNow = (c) => c.status === 'open' && c.decision?.type === 'ignore';
+
 function passes(c) {
   if (c.round > viewedRound()) return false;
   if (ui.sev.size && !ui.sev.has(sevKey(c))) return false; // no chip picked = all severities
   if (ui.reviewer && !c.reviewers.includes(ui.reviewer)) return false;
   switch (ui.status) {
-    case 'active': return c.status !== 'resolved';
+    case 'active': return c.status !== 'resolved' && !ignoredForNow(c);
+    case 'ignored': return ignoredForNow(c);
     case 'needs': return c.author === 'ai' && c.status === 'open' && !c.decision;
     case 'all': return true;
     default: return c.status === ui.status;
@@ -198,6 +202,7 @@ function render() {
   const L = latest();
   document.title = pageTitle(ui.data.sessionTitle, ui.view?.title || review.article);
   $('#doc-title').textContent = ui.view?.title || review.article;
+  $('#version').textContent = ui.data.version ? `v${ui.data.version}` : '';
   document.body.classList.toggle('read-only', readOnly());
   // The round is with Claude (handed over, or being worked on): nothing may change until it publishes.
   const withClaude = !isPast() && (L.status === 'submitted' || L.status === 'preparing');
@@ -356,7 +361,7 @@ function renderSidebar() {
 }
 
 const KIND_LABEL = { fixed: 'fixed', accepted: 'accepted your decline', challenge: 'challenged', reply: 'reply', resolved: 'resolved', reopened: 'reopened' };
-const DECISION_LABEL = { approve: 'Approved', decline: 'Declined', ignore: 'Ignored' };
+const DECISION_LABEL = { approve: 'Approved', decline: 'Declined', ignore: 'Ignored for now' };
 
 function quoteBlock(c) {
   const l = ui.loc.get(c.id);
@@ -383,7 +388,7 @@ function renderCard(c, where) {
   const head = h('div', { class: 'card-head' },
     h('span', { class: `pill sev sev-${s}` }, c.author === 'user' ? 'You' : c.severity),
     c.reviewers.length ? h('span', { class: 'reviewers', title: 'Flagged by' }, c.reviewers.join(', ')) : null,
-    c.status !== 'open' ? h('span', { class: 'pill' }, c.decision?.type === 'ignore' ? 'ignored' : c.status) : null,
+    c.status !== 'open' ? h('span', { class: 'pill' }, c.status) : null,
     h('span', { class: 'pill', title: `Created in round ${c.round}` }, `R${c.round}`),
     h('span', { class: 'id', title: 'Show in document', onclick: () => select(c.id, { doc: true }) }, `#${c.id.slice(1)}`));
   card.append(head, quoteBlock(c), h('div', { class: 'body', html: inline(c.body) }));
@@ -404,11 +409,11 @@ function renderCard(c, where) {
       t.kind !== 'decision' && t.body ? h('div', { class: 'txt', html: inline(t.body) }) : null))));
   }
 
-  if (c.decision) {
+  if (c.decision && (c.decision.type !== 'ignore' || ignoredForNow(c))) {
     // On an approved review there is no next round: a decision that was still waiting stays undone.
     const hint = latest().status === 'approved'
-      ? { approve: ' · not acted on: the document was approved as it stood', decline: ' · not acted on: the document was approved as it stood', ignore: '' }[c.decision.type]
-      : { approve: ' · Claude applies it next round', decline: ' · Claude accepts or challenges next round', ignore: '' }[c.decision.type];
+      ? { approve: ' · not acted on: the document was approved as it stood', decline: ' · not acted on: the document was approved as it stood', ignore: ' · left open: the document was approved as it stood' }[c.decision.type]
+      : { approve: ' · Claude applies it next round', decline: ' · Claude accepts or challenges next round', ignore: ' · stays open, comes back next round' }[c.decision.type];
     card.append(h('div', { class: `decision ${c.decision.type}` }, `${DECISION_LABEL[c.decision.type]}${hint}`,
       c.decision.note ? h('div', { class: 'note', html: inline(c.decision.note) }) : null));
   }
@@ -422,12 +427,10 @@ function renderCard(c, where) {
         btn('Approve', 'approve', () => decide(c.id, 'approve'), 'a');
         btn('Approve + comment', 'approve', () => openForm(c.id, 'approve'), 'A');
         btn('Decline', 'decline', () => decide(c.id, 'decline'), 'd');
-        btn('Decline + comment', 'decline', () => openForm(c.id, 'decline'), 'D');
-        btn('Ignore', '', () => decide(c.id, 'ignore'), "i: won't act, resolves it");
+        btn('Ignore for now', '', () => decide(c.id, 'ignore'), 'i: set it aside for this round; it stays open and comes back next round');
       } else btn('Undo decision', '', () => decide(c.id, 'clear'), 'u');
     }
     if (c.status !== 'resolved') {
-      btn('Reply', '', () => openForm(c.id, 'reply'), 'R');
       btn('Resolve', '', () => act(() => api('POST', `/api/comments/${c.id}/resolve`), 'Resolved'), 'r');
     } else btn('Reopen', '', () => act(() => api('POST', `/api/comments/${c.id}/reopen`)), 'r');
     if (c.author === 'user' && !c.thread.some((t) => t.author === 'ai')) {
@@ -440,7 +443,7 @@ function renderCard(c, where) {
 
 function formEl(where) {
   const f = ui.form;
-  const placeholder = { approve: 'Approve, with a note for Claude…', decline: 'Why decline? Claude reads this next round…', reply: 'Reply…', new: 'Your comment for Claude…' }[f.kind];
+  const placeholder = { approve: 'Approve, with a note for Claude…', new: 'Your comment for Claude…' }[f.kind];
   const ta = h('textarea', { placeholder, 'data-where': where });
   ta.value = f.text || '';
   ta.addEventListener('input', () => { f.text = ta.value; });
@@ -448,7 +451,7 @@ function formEl(where) {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendForm(); }
     if (e.key === 'Escape') { e.preventDefault(); closeForm(); }
   });
-  const label = { approve: 'Approve', decline: 'Decline', reply: 'Send reply', new: 'Add comment' }[f.kind];
+  const label = { approve: 'Approve', new: 'Add comment' }[f.kind];
   return h('div', { class: 'form' }, ta, h('div', { class: 'row' },
     h('span', { class: 'muted', style: 'margin-right:auto;font-size:12px' }, '⌘↵ to send'),
     h('button', { class: 'small', onclick: closeForm }, 'Cancel'),
@@ -480,7 +483,7 @@ async function sendForm() {
   const f = ui.form;
   if (!f) return;
   const text = (f.text || '').trim();
-  if ((f.kind === 'reply' || f.kind === 'new') && !text) { toast('Write something first', true); return; }
+  if (f.kind === 'new' && !text) { toast('Write something first', true); return; }
   try {
     if (f.kind === 'new') {
       const c = await api('POST', '/api/comments', { anchor: f.anchor, body: text });
@@ -489,8 +492,7 @@ async function sendForm() {
       closePopover();
       toast('Comment added');
     } else {
-      if (f.kind === 'reply') await api('POST', `/api/comments/${f.id}/reply`, { body: text });
-      else await api('POST', `/api/comments/${f.id}/decision`, { type: f.kind, note: text });
+      await api('POST', `/api/comments/${f.id}/decision`, { type: f.kind, note: text });
       ui.form = null;
     }
   } catch (e) {
@@ -505,7 +507,7 @@ function decide(id, type) {
   const c = byId(id);
   if (!c || c.author !== 'ai' || c.status !== 'open') return;
   if (type !== 'clear' && c.decision) return;
-  act(() => api('POST', `/api/comments/${id}/decision`, { type }), { approve: 'Approved', decline: 'Declined', ignore: 'Ignored (resolved)' }[type]);
+  act(() => api('POST', `/api/comments/${id}/decision`, { type }), { approve: 'Approved', decline: 'Declined', ignore: 'Ignored for now' }[type]);
 }
 
 async function copy(text) {
@@ -735,13 +737,14 @@ function dismissDialog() {
 }
 const modelLabel = (m) => (m || 'session');
 
-// toFix: what Claude would act on after "Submit round". undecided: reviewer comments with no decision yet.
+// toFix: what Claude would act on after "Submit round". undecided: reviewer comments with no decision yet,
+// or set aside with "Ignore for now".
 // total: comments in either group (one can be in both), which is what an approval leaves as it is.
 function pendingCounts() {
   const cs = ui.data.review.comments;
-  const undecided = cs.filter((c) => c.author === 'ai' && c.status === 'open' && !c.decision);
+  const undecided = cs.filter((c) => c.author === 'ai' && c.status === 'open' && (!c.decision || c.decision.type === 'ignore'));
   const toFix = cs.filter((c) => c.status !== 'resolved' && (c.decision?.type === 'approve' || c.decision?.type === 'decline'
-    || (c.author === 'user' && !c.thread.some((t) => t.author === 'ai')) || c.thread[c.thread.length - 1]?.author === 'user'));
+    || (c.author === 'user' && !c.thread.some((t) => t.author === 'ai'))));
   return { undecided: undecided.length, toFix: toFix.length, total: new Set([...undecided, ...toFix]).size };
 }
 
@@ -974,7 +977,7 @@ async function openReviewDialog() {
         'A reviewer with nothing to say reports nothing.'),
       h('li', {}, 'Claude merges findings that make the same point about the same text into one comment. It names every reviewer who raised it and keeps the highest severity. Opposing views stay separate.'),
       h('li', {}, 'All findings arrive together, as comments in the next round. The document itself is not changed.'),
-      h('li', {}, 'You approve, decline or ignore each comment, then press Submit round to have Claude fix what you approved.')));
+      h('li', {}, 'You approve or decline each comment, or ignore it for now, then press Submit round to have Claude fix what you approved.')));
   const helpBtn = h('button', { class: 'ghost small', title: 'How an AI review works', onclick: () => { help.hidden = !help.hidden; } }, '?');
 
   draw();
@@ -1014,10 +1017,8 @@ document.addEventListener('keydown', (e) => {
   if (k === 'a') decide(id, 'approve');
   else if (k === 'A') { e.preventDefault(); if (c.author === 'ai' && c.status === 'open' && !c.decision) openForm(id, 'approve'); }
   else if (k === 'd') decide(id, 'decline');
-  else if (k === 'D') { e.preventDefault(); if (c.author === 'ai' && c.status === 'open' && !c.decision) openForm(id, 'decline'); }
   else if (k === 'i') decide(id, 'ignore');
   else if (k === 'u') decide(id, 'clear');
-  else if (k === 'R') { e.preventDefault(); if (c.status !== 'resolved') openForm(id, 'reply'); }
   else if (k === 'r' && !readOnly()) act(() => api('POST', `/api/comments/${id}/${c.status === 'resolved' ? 'reopen' : 'resolve'}`));
   else if (k === 'y' && c.suggestion) copy(c.suggestion);
 });

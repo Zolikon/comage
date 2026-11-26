@@ -25,10 +25,12 @@ test('state, round gating, decisions, static guards', async () => {
     const st = await (await fetch(`${base}/api/state`)).json();
     assert.equal(st.review.comments.length, 1);
     assert.equal(st.article.title, 'Test Article');
+    assert.equal(st.version, JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8')).version); // shown beside the logo
     assert.match(st.article.plain, /The cat ran/);
     assert.equal((await post('/api/comments/c1/decision', { type: 'approve' })).status, 409);
     m.publish(dir);
     assert.equal((await post('/api/comments/c1/decision', { type: 'approve', note: 'ok' })).status, 200);
+    assert.equal((await post('/api/comments/c1/reply', { body: 'hm' })).status, 404); // the author no longer answers in the thread
     assert.equal((await fetch(`${base}/api/round/1`)).status, 200);
     const uc = await post('/api/comments', { anchor: { kind: 'article' }, body: 'mine' });
     assert.equal((await uc.json()).id, 'c2');

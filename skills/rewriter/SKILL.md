@@ -103,13 +103,15 @@ never in chat. Do what the **AI review** button does:
    - `approved`: apply the fix to the document (follow the author's note if there is one). Reply with
      `fixed` and one line on what changed. If the quoted text changed, pass the new text as `quote` so the
      comment re-anchors.
-   - `declined`: read the author's note. Default to `accepted` (one-line acknowledgement). Use `challenge`
-     only with a concrete reason: a factual error, broken code, or a contradiction with the spec or the
-     codebase. Challenge a comment at most once. If the author declines again, accept.
+   - `declined`: default to `accepted` (one-line acknowledgement). A decline comes without a reason. Use
+     `challenge` only with a concrete reason: a factual error, broken code, or a contradiction with the
+     spec or the codebase. Challenge a comment at most once. If the author declines again, accept.
    - `user-comment`: the author's own note. Do it and reply `fixed`, answer with `reply`, or push back with
      `challenge` and a reason.
-   - `user-reply`: answer the latest message (`reply`, `fixed` or `challenge`).
-   Comments that are open with no decision are carried over: leave them alone and don't re-post them.
+   The author cannot answer inside a comment's thread: they decide again, resolve, or write a new comment.
+   So never end a reply with a question; if you need an answer before you can act, ask in chat.
+   Comments that are open with no decision are carried over, and so are the ones the author set aside
+   with **Ignore for now**: leave them alone and don't re-post them.
    Post no new comments of your own.
 4. **`review`** (AI review): don't edit the document and don't reply to anything. `held` counts the
    author's pending items; they wait for the author's next **Submit round**. Run the AI review (below)
@@ -310,6 +312,8 @@ file), and **?** explains how a review runs.
 The author can delete an own comment until Claude has answered it. While a round is with you the UI is
 locked and says so: "Waiting for Claude" (`submitted`) or "Claude is working" (`preparing`). It unlocks
 when you `publish`. Earlier rounds can be viewed read-only.
-Keys: `j/k` move, `a/A` approve (with comment), `d/D` decline (with comment), `i` ignore, `u` undo,
-`r` resolve/reopen, `R` reply, `y` copy suggestion, `c` comment on selection, `?` help.
-Ignore means "won't act": it resolves the comment and needs no reply from you.
+Keys: `j/k` move, `a/A` approve (with comment), `d` decline, `i` ignore for now, `u` undo,
+`r` resolve/reopen, `y` copy suggestion, `c` comment on selection, `?` help.
+**Ignore for now** sets a reviewer comment aside for this round: it stays open, leaves the default list,
+needs nothing from you, and the author is asked about it again next round. To dismiss a comment for good
+the author resolves it.

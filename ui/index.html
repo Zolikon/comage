@@ -10,7 +10,7 @@
 <body>
 <header id="top">
   <div class="head-left">
-    <div class="brand">Re<span>Writer</span></div>
+    <div class="brand">Re<span>Writer</span><small id="version" class="brand-version"></small></div>
     <select id="round-select" title="Round to view" hidden></select>
   </div>
   <div class="head-center">
@@ -40,6 +40,7 @@
           <option value="needs">Needs your decision</option>
           <option value="open">Open</option>
           <option value="addressed">Addressed by Claude</option>
+          <option value="ignored">Ignored for now</option>
           <option value="resolved">Resolved</option>
           <option value="all">All</option>
         </select>
@@ -59,11 +60,10 @@
     <table>
       <tr><td><kbd>j</kbd> / <kbd>k</kbd></td><td>Next / previous comment</td></tr>
       <tr><td><kbd>a</kbd> / <kbd>A</kbd></td><td>Approve / approve with comment</td></tr>
-      <tr><td><kbd>d</kbd> / <kbd>D</kbd></td><td>Decline / decline with comment</td></tr>
-      <tr><td><kbd>i</kbd></td><td>Ignore (won't act, resolves)</td></tr>
+      <tr><td><kbd>d</kbd></td><td>Decline</td></tr>
+      <tr><td><kbd>i</kbd></td><td>Ignore for now (stays open, comes back next round)</td></tr>
       <tr><td><kbd>u</kbd></td><td>Undo decision</td></tr>
       <tr><td><kbd>r</kbd></td><td>Resolve / reopen</td></tr>
-      <tr><td><kbd>R</kbd></td><td>Reply</td></tr>
       <tr><td><kbd>y</kbd></td><td>Copy suggestion</td></tr>
       <tr><td><kbd>c</kbd></td><td>Comment on selected text</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>Close popover / form</td></tr>

@@ -99,15 +99,42 @@ test('decision can be changed and cleared before submit', () => {
   assert.throws(() => m.setDecision(dir, c.id, { type: 'maybe' }), (e) => e.status === 400);
 });
 
-test('ignore resolves', () => {
+function toNextRound(dir) { m.submit(dir); m.nextRound(dir); }
+
+test('ignore is for now: the comment stays open and is undecided again in the next round', () => {
   const { dir, created: [c] } = opened();
   m.setDecision(dir, c.id, { type: 'ignore' });
-  const s = m.load(dir).comments[0];
-  assert.equal(s.status, 'resolved');
+  let s = m.load(dir).comments[0];
+  assert.equal(s.status, 'open');
   assert.equal(s.decision.type, 'ignore');
+  toNextRound(dir);
+  s = m.load(dir).comments[0];
+  assert.equal(s.status, 'open');
+  assert.equal(s.decision, null);
+  assert.deepEqual(s.thread.map((x) => [x.author, x.kind, x.type, x.round]), [['user', 'decision', 'ignore', 1]]);
+  const p = m.pending(dir);
+  assert.deepEqual([p.needsAction.length, p.carriedOver], [0, 1]); // nothing for Claude to do with it
+  m.publish(dir);
+  m.setDecision(dir, c.id, { type: 'approve' }); // the author is asked again, and can decide now
+  assert.equal(m.load(dir).comments[0].decision.type, 'approve');
 });
 
-function toNextRound(dir) { m.submit(dir); m.nextRound(dir); }
+test('an approval leaves a comment ignored for now as not acted on', () => {
+  const { dir, created: [c] } = opened();
+  m.setDecision(dir, c.id, { type: 'ignore' });
+  m.approve(dir);
+  assert.equal(m.pending(dir).notActedOn, 1);
+});
+
+test('only an approval carries a note', () => {
+  const { dir, created: [a, b] } = opened([{ severity: 'MAJOR', body: 'a' }, { severity: 'MINOR', body: 'b' }]);
+  m.setDecision(dir, a.id, { type: 'approve', note: 'but keep the heading' });
+  m.setDecision(dir, b.id, { type: 'decline', note: 'because' });
+  const [sa, sb] = m.load(dir).comments;
+  assert.equal(sa.decision.note, 'but keep the heading');
+  assert.equal(sb.decision.note, '');
+  assert.equal(m.userReply, undefined); // the author answers with a decision or a new comment, not in the thread
+});
 
 test('challenge clears decision and reopens', () => {
   const { dir, created: [c] } = opened();
@@ -119,7 +146,6 @@ test('challenge clears decision and reopens', () => {
   assert.equal(s.decision, null);
   assert.deepEqual(s.thread.map((t) => [t.author, t.kind]), [['user', 'decision'], ['ai', 'challenge']]);
   assert.equal(s.thread[0].type, 'decline');
-  assert.equal(s.thread[0].note, 'wrong');
   assert.equal(s.thread[1].round, 2);
 });
 
@@ -141,7 +167,7 @@ test('claude cannot reply outside preparing round; never resolves', () => {
   assert.throws(() => m.reply(dir, c.id, { kind: 'reply', body: 'x' }), (e) => e.status === 409);
 });
 
-test('pending lists approve/decline/user comment/user reply, counts carried-over', () => {
+test('pending lists approve/decline/user comment, counts carried-over', () => {
   const { dir, created } = opened([
     { severity: 'MAJOR', body: 'a', quote: 'The cat ran' },
     { severity: 'MINOR', body: 'b', quote: 'Another paragraph' },
@@ -149,29 +175,27 @@ test('pending lists approve/decline/user comment/user reply, counts carried-over
     { severity: 'BLOCKER', body: 'd' },
     { severity: 'MINOR', body: 'e' },
   ]);
-  const [a, b, c, d] = created;
+  const [a, b, c] = created;
   m.setDecision(dir, a.id, { type: 'approve' });
   m.setDecision(dir, b.id, { type: 'decline', note: 'no' });
   m.setDecision(dir, c.id, { type: 'ignore' });
-  m.userReply(dir, d.id, 'why?');
   const u = m.userComment(dir, { anchor: { kind: 'text', quote: 'Second section', prefix: '', suffix: '' }, body: 'rename' });
   toNextRound(dir);
   const p = m.pending(dir);
   assert.equal(p.round, 2);
   const why = Object.fromEntries(p.needsAction.map((x) => [x.id, x.why]));
-  assert.deepEqual(why, { [a.id]: ['approved'], [b.id]: ['declined'], [d.id]: ['user-reply'], [u.id]: ['user-comment'] });
-  assert.equal(p.carriedOver, 1);
+  assert.deepEqual(why, { [a.id]: ['approved'], [b.id]: ['declined'], [u.id]: ['user-comment'] });
+  assert.equal(p.carriedOver, 3); // ignored for now, and the two nobody decided on
   assert.equal(p.needsAction.find((x) => x.id === a.id).anchored, true);
 });
 
-test('user reply on addressed comment reopens it; resolve/reopen', () => {
+test('resolve and reopen an addressed comment', () => {
   const { dir, created: [c] } = opened();
   m.setDecision(dir, c.id, { type: 'approve' });
   toNextRound(dir);
   m.reply(dir, c.id, { kind: 'fixed', body: 'done' });
   m.publish(dir);
-  m.userReply(dir, c.id, 'not quite');
-  assert.equal(m.load(dir).comments[0].status, 'open');
+  assert.equal(m.load(dir).comments[0].status, 'addressed');
   m.resolve(dir, c.id);
   assert.equal(m.load(dir).comments[0].status, 'resolved');
   m.reopen(dir, c.id);

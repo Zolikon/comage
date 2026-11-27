@@ -34,8 +34,8 @@ test('every command in the skill table exists in the CLI, and the flow uses requ
 
 test('plugin and package versions match', () => {
   const v = (f) => JSON.parse(readFileSync(join(ROOT, f), 'utf8')).version;
-  assert.equal(v('.claude-plugin/plugin.json'), '1.5.0');
-  assert.equal(v('package.json'), '1.5.0');
+  assert.equal(v('.claude-plugin/plugin.json'), '1.6.0');
+  assert.equal(v('package.json'), '1.6.0');
 });
 
 test('the skill is safe for parallel sessions: JSON goes over stdin, and a round held elsewhere is left alone', () => {

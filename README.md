@@ -9,10 +9,27 @@ choosing the reviewers and the model each one runs on. Reviewers always run as s
 
 ## Install
 
+For yourself, in every project (user level, the default):
+
 ```bash
 claude plugin marketplace add Zolikon/comage
 claude plugin install comage@comage
 ```
+
+For one project only, run from that project's root:
+
+```bash
+claude plugin marketplace add Zolikon/comage --scope project
+claude plugin install comage@comage --scope project
+```
+
+| Scope | Written to | Who gets the plugin |
+|---|---|---|
+| `user` (default) | `~/.claude/settings.json` | you, in every project |
+| `project` | `.claude/settings.json` in the project | everyone who works in the project, once the file is committed |
+| `local` | `.claude/settings.local.json` in the project | you, in this project only; the file is not committed |
+
+Use `--scope local` in both commands for a project-only install that stays off your teammates' machines.
 
 Or, from a local checkout, try it for one session without installing:
 
@@ -74,21 +91,35 @@ only for now.
 
 ## Reviewers
 
-The **AI review** dialog shows one library: your saved reviewers first, then the built-in starters. Select
-one to read or edit its description and pick its model, then add it to the panel. A new reviewer, or a
-change to an existing one, can be saved to your library (**Save & use**, **Update & use**) or kept with
-this document only (**Use once**, **Use without updating**).
+Reviewers are kept in two libraries, whichever way the plugin is installed:
 
-Your library is `~/.claude/rewriter/reviewers.json`, shared by every document and project. You can also
-edit it by hand:
+| Library | File | Who has it |
+|---|---|---|
+| Yours | `~/.claude/rewriter/reviewers.json` | you, in every project |
+| The project's | `.claude/rewriter/reviewers.json` at the project root | everyone working in the project, once the file is committed |
+
+Both have the same shape and can be edited by hand:
 
 ```json
 { "library": [{ "persona": "DBA", "background": "Owns the production database. Looks at migrations and query cost.", "model": "sonnet" }] }
 ```
 
-To share your reviewers, press **Export** above the library: it downloads `reviewers.json`. The other
-person saves it as their own `~/.claude/rewriter/reviewers.json`, or copies the entries they want into
-theirs. There is no import button yet.
+On a name clash the project's reviewer wins over yours, and yours over a built-in starter. A project that
+keeps reviewers of its own also decides its default panel: they are what "run the default panel" means in
+that project, and what the dialog preloads on a document's first AI review. A list under a document type
+(`"spec": [...]`, `"plan": [...]`) is for documents of that type only; `library` is for all of them.
+
+The **AI review** dialog has the panel (who runs, each with its model), the library and an editor:
+
+- Tick a reviewer to put it in the panel. The library is grouped (this project's, yours, the starters) and
+  has a filter.
+- Select a reviewer to read or edit it. **+ New reviewer** starts an empty one, **Duplicate** one from the
+  reviewer shown.
+- Edits to a reviewer in the panel count at once, for this document only. **Save to** *This project* or
+  *My library* keeps them.
+- **Import** and **Export** beside each library merge in or download a `reviewers.json`, to share
+  reviewers with someone who doesn't work in the project. Import replaces reviewers of the same name and
+  leaves the rest.
 
 The panel has no upper limit, but every reviewer is a separate subagent run; 2–5 usually cover a document.
 Reviewers run as the plugin's own `comage:reviewer` agent: it can read files and search the web to check

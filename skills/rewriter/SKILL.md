@@ -36,7 +36,7 @@ found`, run `node "${CLAUDE_PLUGIN_ROOT}/rewriter.mjs" <command> <doc> …` inst
 | `wait <doc>` | block until the author ends the round (any of the three buttons), then print `pending`; prints `{ "roundStatus": "gone" }` if there is no review (any more) |
 | `approve <doc>` | approve for the author, as the UI's **Approve** button does: the review is closed, its UI stops and its state is removed (`--note`) |
 | `status <doc>` | short summary + what happens next |
-| `reviewers <doc>` | JSON: every reviewer available, `suggested` = meant for this document type |
+| `reviewers <doc>` | JSON: every reviewer available; `source` says where it is kept, `suggested` = in the default panel for this document |
 | `request-review <doc> --file -` | ask for an AI review for the author, as the UI's **AI review** button does; the panel is a JSON array on stdin (also `--reviewer NAME`…, `--note`) |
 | `serve <doc>` | start the UI (run in background; it live-reloads), or print the URL of the server already running for this document |
 | `running` | no `<doc>`. The review UIs running for this session, one `name  url` line each (`--json` for JSON). The user sees the same list under their prompt |
@@ -250,23 +250,37 @@ the new text after an edit.
 
 ## Reviewers
 
-`rewriter reviewers <doc>` lists every reviewer there is. They come from three places, later ones winning
-on a name clash:
+`rewriter reviewers <doc>` lists every reviewer there is, each with its `source`. They come from four
+places, later ones winning on a name clash:
 
-1. Built-in starters in `${CLAUDE_PLUGIN_ROOT}/reviewers.default.json`, keyed by document type (`article`,
-   `spec`, `plan`, `generic`). The type only decides which ones are `suggested` (the "default panel").
-2. The author's library, `~/.claude/rewriter/reviewers.json`: same shape, any keys. The UI saves under
-   `library`.
-3. Reviewers kept with this review only.
+1. `built-in`: starters in `${CLAUDE_PLUGIN_ROOT}/reviewers.default.json`, keyed by document type
+   (`article`, `spec`, `plan`, `generic`).
+2. `user`: the author's library, `~/.claude/rewriter/reviewers.json`. Theirs in every project.
+3. `project`: the project's library, `<project root>/.claude/rewriter/reviewers.json`, where the project
+   root is the git repository the document is in (the folder that holds its `.rewriter/`). It is an
+   ordinary project file, meant to be committed, so everyone working in the project gets the same
+   reviewers.
+4. `review`: reviewers kept with this review only.
+
+The two library files have the same shape as the starters file: lists of reviewers under any keys. A key
+that is a document type holds reviewers for that type; the UI saves under `library`, which is for every
+type.
 
 ```json
 { "library": [{ "persona": "DBA", "background": "Owns the production database…", "focus": ["Migrations", "Query cost"], "model": "sonnet" }] }
 ```
 
-In the AI review dialog the author can save a reviewer, or a change to one, to their library, or use it
-with this document only; those stay with the review, as do new reviewers you pass to `request-review`.
-When the user asks for a reviewer to be available everywhere, add it to their library file (keep what is
-already in it).
+**Default panel** (the `suggested` entries): when the project's library has reviewers for this document
+(under its type, or under `library`), the default panel is those and nothing else. Otherwise it is the
+reviewers of the document's type from the starters and the author's library, or the `generic` ones when
+the type has none.
+
+In the AI review dialog the author can save a reviewer, or a change to one, to the project or to their
+own library, or use it with this document only; those stay with the review, as do new reviewers you pass
+to `request-review`. When the user asks in chat for a reviewer to be kept: "for this project" (or for the
+team) means the project's file, "everywhere" or "for me" means their own. Add it to that file and keep
+what is already in it; create the file and its folders if they are not there. Never add the project's
+file to a commit unless asked: it is the user's to commit.
 
 ## Several Claude sessions
 
@@ -298,17 +312,24 @@ id from the environment; you pass nothing.
 
 Highlights and margin bubbles are coloured by severity (author comments are purple). Clicking either opens
 the comment. The sidebar has filters (severity, reviewer, status; resolved comments are hidden by default).
+The severity pills there are the only ones: each shows how many comments of its kind are unresolved, and
+clicking it filters the list to that kind.
 To comment, select text, or use the `+` beside a block, or "General comment". The header has three buttons.
 **Approve** asks for confirmation, warns when open items will not be acted on, then closes the review:
 the page says "Approved" and its tab closes by itself. Where the browser doesn't let a page close its
 tab, the page stays, read-only, and says it can be closed; it no longer updates, because its server has
 stopped.
 **Submit round** opens a dialog with the count of items for Claude and a note. **AI review** opens a
-dialog with a panel of the reviewers that will run (the last panel used on this document is preloaded), a
-library (the author's saved reviewers, then the built-in starters), and an editor for the selected
-reviewer: its description, its model, and buttons to use it as is or to save the change to the library. **Export**
-downloads the author's library as `reviewers.json` for sharing (someone else saves it as their own library
-file), and **?** explains how a review runs.
+dialog with three parts. The panel lists the reviewers that will run, each with its model; the last panel
+used on this document is preloaded, or the project's default panel on the first AI review. The library
+lists who exists, grouped as this document's, this project's, the author's own ("Yours") and the starters,
+with a filter box; ticking a reviewer puts it in the panel, **+ New reviewer** starts one. The editor
+shows the selected reviewer's description and model: edits to a reviewer in the panel apply at once and
+count for this document only until saved, **Save to** (This project / My library) saves it, **Duplicate**
+starts a new one from it. **Import** and **Export** beside the project's and the author's library merge in
+or download a `reviewers.json` for sharing, and **?** explains how a review runs.
+Questions the UI asks (delete a comment, remove a reviewer, close a dialog with unsaved work) are shown in
+the page, with buttons.
 The author can delete an own comment until Claude has answered it. While a round is with you the UI is
 locked and says so: "Waiting for Claude" (`submitted`) or "Claude is working" (`preparing`). It unlocks
 when you `publish`. Earlier rounds can be viewed read-only.

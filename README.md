@@ -120,6 +120,11 @@ Each round ends with one of three buttons:
   how much), and the review's state is removed. If the document has to change after all, it gets a new
   review.
 
+While a round is with Claude, the page shows neither the document nor its comments: both are out of date
+by then. In their place an animation says that work is going on, and for an AI review it shows every
+reviewer of the panel by name, each with its model. The document comes back with the next round; earlier
+rounds stay in the round list.
+
 Review state is stored in `.rewriter/` at the project root: the git repository the document is in, or
 the document's own folder when it is in none. The folder ignores itself in git, so there is nothing to add
 to a `.gitignore`. It holds reviews in progress only: an approved review is removed, and when nothing is

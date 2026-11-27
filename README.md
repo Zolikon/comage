@@ -1,11 +1,48 @@
-# ReWriter
+# CoMage
 
-A Claude Code plugin for PR-style review rounds on markdown documents: articles, design specs,
-implementation plans, or anything else.
+A Claude Code plugin. One feature so far: **ReWriter**.
 
-The author reads the document in a local browser UI, comments on it, and approves or declines reviewer
-comments. Claude applies the fixes and answers. On any round the author can also ask for an AI review,
-choosing the reviewers and the model each one runs on. Reviewers always run as subagents.
+## Features
+
+### ReWriter
+
+**Review for the documents Claude writes.**
+
+Claude writes a spec and asks whether it looks right. Answering in chat means quoting passages back,
+describing where they are, and hoping the fix landed in the right place. ReWriter gives the document the familiar review flow as a code review would:
+
+- **Comment where the problem is.** Select any passage in the browser and leave a note. No quoting, no
+  "third paragraph of section 2".
+- **An answer on every comment.** Submit the round and Claude fixes the document, replies in each thread
+  and hands back the new version. Round after round, until it is right.
+- **A review panel on demand.** Architect, Scope Skeptic, Test Engineer, or any role you can describe. Each reviewer is a subagent of its own, on the model you pick, and they all run in parallel.
+- **Reviewers that check instead of guessing.** They read your code and search the web to verify what the
+  document claims. They cannot edit files or run commands.
+- **You decide, not the AI.** Findings arrive as comments on the text, each with a severity from `BLOCKER`
+  to `NITPICK` and often with replacement text ready to use. Approve or decline each one. Claude fixes
+  only what you approved.
+- **It opens itself.** Claude starts a review right after it writes a spec, plan or article draft. Press
+  **Approve** when the document is good and Claude goes on with the work.
+- **Your team's reviewers, in git.** Keep a reviewer library in the project and everyone gets the same
+  panel. Keep another one for yourself, in every project.
+- **Nothing to set up.** A local browser UI, Node 22, no `npm install`, no account. Two commands to
+  [install](#install).
+- **Safe in parallel.** Any number of Claude sessions, any number of documents, each review with its own
+  state.
+- **Mod support** Claude Code cli shows ReWriter instance tied to given session
+
+## Contents
+
+- [Install](#install)
+- [Using ReWriter](#using-rewriter)
+  - [Flow](#flow)
+  - [Review rounds](#review-rounds)
+  - [Several sessions at once](#several-sessions-at-once)
+    - [Footer link](#footer-link)
+  - [Reviewers](#reviewers)
+- [Layout](#layout)
+- [License](#license)
+- [Development](#development)
 
 ## Install
 
@@ -39,7 +76,30 @@ claude --plugin-dir path/to/comage
 
 Requires Node 22. There is nothing to `npm install`.
 
-## Use
+## Using ReWriter
+
+### Flow
+```mermaid
+flowchart TD
+    generate[Claude Code generates a spec for you to review] -->|starts ReWriter| review[ReWriter offers the document for review]
+    review --> decision{You take a look, review comments if any from previous rounds}
+    decision --> |Approve| approve[Claude Code sees the document as approved and moves forward with it]
+    decision --> |Comment| review_state[Add your own comments as you see fit or react to existing comments]
+    review_state --> fix[Submit the change requests, Claude Code will get your comments and make the changes]
+    fix --> |Sends back fix for another round|review
+    decision --> |Ask for expert review| compose_panel[You compose and panel of experts, from predifined ones or create new ones]
+    compose_panel --> |Trigger review| expert_review_composer[Hand over the AI review request to Claude Code with the expert panel]
+    expert_review_composer --> R1 & R2 & R3
+    subgraph P["Reviewer subagents: each are independent and read-only"]
+        R1["Architect<br/>opus"]
+        R2["Scope Skeptic<br/>sonnet"]
+        R3["DBA, a role you wrote<br/>sonnet"]
+    end
+    R1 & R2 & R3 --> M["Findings appear in the UI<br/>as comments with a severity"]
+    M --> review
+```
+
+### Review rounds
 
 ```
 /comage:rewriter docs/specs/auth.md
@@ -66,9 +126,9 @@ to a `.gitignore`. It holds reviews in progress only: an approved review is remo
 under review the folder is gone. Reviews from versions before 1.4.0, which kept their state beside each
 document, move to the project root the first time they are used.
 
-## Several sessions at once
+### Several sessions at once
 
-The plugin is safe to use from any number of Claude sessions in parallel.
+ReWriter is safe to use from any number of Claude sessions in parallel.
 
 - Each document has its own review state, so sessions working on different documents share nothing.
 - Each document has one UI server. A second session asking for it gets the running server's URL instead
@@ -82,14 +142,14 @@ The plugin is safe to use from any number of Claude sessions in parallel.
 - The browser tab is named after the Claude session working on the review (`<session title> · <document>`),
   and follows the session when it is retitled or renamed.
 
-### Footer link
+#### Footer link
 
-While a review UI that a session opened is running, the plugin shows its address under that session's
+While a review UI that a session opened is running, ReWriter shows its address under that session's
 prompt (`ReWriter · auth.md http://127.0.0.1:4870/`), one entry per document. It goes away when the server
 stops, and a session with no review UI shows nothing. `rewriter running` prints the same list. Terminal
 only for now.
 
-## Reviewers
+### Reviewers
 
 Reviewers are kept in two libraries, whichever way the plugin is installed:
 

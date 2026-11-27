@@ -330,9 +330,11 @@ starts a new one from it. **Import** and **Export** beside the project's and the
 or download a `reviewers.json` for sharing, and **?** explains how a review runs.
 Questions the UI asks (delete a comment, remove a reviewer, close a dialog with unsaved work) are shown in
 the page, with buttons.
-The author can delete an own comment until Claude has answered it. While a round is with you the UI is
-locked and says so: "Waiting for Claude" (`submitted`) or "Claude is working" (`preparing`). It unlocks
-when you `publish`. Earlier rounds can be viewed read-only.
+The author can delete an own comment until Claude has answered it. While a round is with you (`submitted`
+or `preparing`) the UI is locked, and the document and its comments make way for an animated "working"
+view: by then they are out of date. It names the reviewers of an AI review and tells the author to tell
+you to continue if you have not picked the round up. The document comes back when you `publish`, so
+publish as soon as the round is done. Earlier rounds can be viewed read-only.
 Keys: `j/k` move, `a/A` approve (with comment), `d` decline, `i` ignore for now, `u` undo,
 `r` resolve/reopen, `y` copy suggestion, `c` comment on selection, `?` help.
 **Ignore for now** sets a reviewer comment aside for this round: it stays open, leaves the default list,

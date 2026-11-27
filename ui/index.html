@@ -25,6 +25,8 @@
   </div>
 </header>
 <div id="banner" hidden></div>
+<!-- Shown instead of the document and its comments while the round is with Claude. -->
+<section id="stage" hidden></section>
 <main>
   <section id="doc-wrap">
     <article id="doc"></article>
@@ -67,7 +69,7 @@
       <tr><td><kbd>c</kbd></td><td>Comment on selected text</td></tr>
       <tr><td><kbd>Esc</kbd></td><td>Close popover / form</td></tr>
     </table>
-    <p class="muted">Every action autosaves. A round ends in one of three ways:<br><b>Submit round</b> hands your comments and decisions to Claude to fix.<br><b>AI review</b> has the reviewers you pick read the document; your pending items wait.<br><b>Approve</b> makes this version final and closes the review, and this tab with it; whatever is still open is left as it is.</p>
+    <p class="muted">Every action autosaves. A round ends in one of three ways:<br><b>Submit round</b> hands your comments and decisions to Claude to fix.<br><b>AI review</b> has the reviewers you pick read the document; your pending items wait.<br><b>Approve</b> makes this version final and closes the review, and this tab with it; whatever is still open is left as it is.<br>While Claude or the reviewers are at work, the document and its comments make way for a "working" view; they come back with the next round. Earlier rounds stay available in the round list.</p>
   </div>
 </div>
 <div id="submit-dlg" hidden></div>

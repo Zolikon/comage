@@ -1,10 +1,13 @@
 import { normalizeWs, findQuote, makeTextAnchor, pageTitle } from '/lib/text.mjs';
+import { stageOf, initials, hues, elapsed, stepAt, REVIEW_STEPS } from '/lib/stage.mjs';
 
 const SEVS = ['BLOCKER', 'MAJOR', 'MINOR', 'NITPICK'];
 const SEV_RANK = { USER: 0, NITPICK: 1, MINOR: 2, MAJOR: 3, BLOCKER: 4 };
 const $ = (s) => document.querySelector(s);
 const docEl = $('#doc');
 const wrapEl = $('#doc-wrap');
+const mainEl = $('main');
+const stageEl = $('#stage');
 
 const ui = {
   data: null, view: null, viewRound: null,
@@ -207,6 +210,86 @@ function findElement(anchor) {
   return els.find((e) => q && normalizeWs(e.textContent).includes(q)) || null;
 }
 
+// ---------- the stage: shown instead of the document while the round is with Claude ----------
+// What it says and when comes from lib/stage.mjs; this draws it. All of it is decoration: nobody reports
+// how far Claude or a reviewer has got, so the picture only says that work is going on.
+const STAR = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0C13 8 16 11 24 12 16 13 13 16 12 24 11 16 8 13 0 12 8 11 11 8 12 0Z"/></svg>';
+const sheet = (lines, ...extra) => h('div', { class: 'st-sheet' }, h('i', { class: 'st-line st-head' }), lines, extra);
+const spark = () => h('div', { class: 'st-spark' }, h('i', { class: 'st-halo' }), h('i', { class: 'st-halo' }), h('span', { html: STAR }));
+
+// The author's comments fly into the sheet, its lines are rewritten one after the other, ticks come out.
+// Without comments (the first round, which nobody asked anything of yet) the sheet is written on its own.
+function fixScene(comments) {
+  const lines = [[92, 74], [70, 90], [84, 62], [56, 80], [90, 70], [64, 86], [38, 54]]; // a line's length before and after
+  return h('div', { class: 'st-scene', 'aria-hidden': 'true' },
+    comments ? [0, 1, 2].map((i) => h('i', { class: `st-chip st-chip-${i}` })) : null,
+    sheet(lines.map(([a, b], i) => h('i', { class: 'st-line', style: `--w:${a}%;--w2:${b}%;--d:${(i * 0.8).toFixed(1)}s` }))),
+    comments ? [0, 1, 2].map((i) => h('i', { class: `st-tick st-tick-${i}` }, '✓')) : null,
+    spark());
+}
+
+// A light passes up and down the sheet while passages on it get marked.
+function reviewScene() {
+  const lines = [88, 72, 92, 60, 84, 76, 44];
+  const marks = { 1: 'm0', 3: 'm1', 5: 'm2' };
+  return h('div', { class: 'st-scene', 'aria-hidden': 'true' },
+    sheet(lines.map((w, i) => h('i', { class: `st-line${marks[i] ? ` st-mark ${marks[i]}` : ''}`, style: `--w:${w}%;--d:${i * 1.1}s` })),
+      h('i', { class: 'st-scan' })));
+}
+
+// One reviewer of the panel: a face of its own colour, its name and model, and what it is "doing".
+function expertEl(r, i, colour) {
+  const doing = h('div', { class: 'st-doing' });
+  const el = h('div', { class: 'st-expert', role: 'listitem', style: `--hue:${colour};--d:${((i * 0.37) % 1.7).toFixed(2)}s;--in:${(i * 0.07).toFixed(2)}s` },
+    h('div', { class: 'st-avatar', 'aria-hidden': 'true' }, h('span', {}, initials(r.persona)), h('i', { class: 'st-note' }), h('i', { class: 'st-note' })),
+    h('div', { class: 'st-name', title: r.persona }, r.persona),
+    h('div', { class: 'st-model', title: 'Model' }, r.model),
+    doing);
+  return { el, doing };
+}
+
+// Changes a word on the stage, with a small entrance when it is a new one.
+function setWord(el, word) {
+  if (el.textContent === word) return;
+  el.textContent = word;
+  el.classList.remove('st-new'); void el.offsetWidth; el.classList.add('st-new');
+}
+
+let stageKey = null; // what the stage on screen was built from: it is rebuilt only when that changes,
+let stageTick = null; // so that the page's many refreshes while Claude works never restart the animation
+function renderStage(st) {
+  const key = st ? JSON.stringify(st) : null;
+  if (key === stageKey) return;
+  stageKey = key;
+  clearInterval(stageTick); stageTick = null;
+  stageEl.hidden = !st; mainEl.hidden = Boolean(st);
+  if (!st) { stageEl.replaceChildren(); return; }
+
+  const working = st.state === 'working';
+  const step = st.steps ? h('div', { class: 'st-step', 'aria-hidden': 'true' }) : null;
+  const colours = hues(st.reviewers.map((r) => r.persona));
+  const experts = st.reviewers.map((r, i) => expertEl(r, i, colours[i]));
+  const since = st.since ? h('div', { class: 'st-since' }) : null;
+  stageEl.className = `st-${st.scene} st-${st.state}`;
+  stageEl.replaceChildren(h('div', { class: 'st-inner' },
+    st.scene === 'review' ? reviewScene() : fixScene(st.handed),
+    h('h2', { class: 'st-title', role: 'status' }, st.title),
+    step,
+    experts.length ? h('div', { class: 'st-panel', role: 'list', 'aria-label': 'Reviewers' }, experts.map((x) => x.el)) : null,
+    h('p', { class: 'st-text' }, st.text),
+    since));
+
+  const built = Date.now();
+  const tick = () => {
+    const t = Math.floor((Date.now() - built) / 1000);
+    if (step) setWord(step, stepAt(st.steps, t));
+    experts.forEach((x, i) => setWord(x.doing, working ? stepAt(REVIEW_STEPS, t, i) : 'waiting'));
+    if (since) since.textContent = `Handed over ${elapsed(Date.now() - Date.parse(st.since))} ago`;
+  };
+  tick();
+  stageTick = setInterval(tick, 1000);
+}
+
 // ---------- filters ----------
 // Set aside by the author for this round: still open, asked again next round.
 const ignoredForNow = (c) => c.status === 'open' && c.decision?.type === 'ignore';
@@ -232,8 +315,10 @@ function render() {
   $('#doc-title').textContent = ui.view?.title || review.article;
   $('#version').textContent = ui.data.version ? `v${ui.data.version}` : '';
   document.body.classList.toggle('read-only', readOnly());
-  // The round is with Claude (handed over, or being worked on): nothing may change until it publishes.
-  const withClaude = !isPast() && (L.status === 'submitted' || L.status === 'preparing');
+  // The round is with Claude (handed over, or being worked on): nothing may change until it publishes, and
+  // the document and its comments make way for the stage.
+  const stage = stageOf(review, ui.viewRound);
+  const withClaude = Boolean(stage);
   if (readOnly()) {
     // Close whatever could still send a change: an open question, the round dialogs, a comment form, the "Comment" button.
     closeAsk(false);
@@ -241,6 +326,7 @@ function render() {
     if (ui.form) { if (ui.form.kind === 'new') closePopover(); ui.form = null; }
     $('#sel-btn').hidden = true;
   }
+  if (stage) closePopover(); // a comment card left open would float over the stage
   $('#new-general').disabled = readOnly();
 
   // Header controls appear only when they can do something.
@@ -264,8 +350,11 @@ function render() {
   let msg = '';
   let info = false;
   if (ui.view?.error) msg = `Document could not be loaded: ${ui.view.error}`;
-  else if (isPast()) msg = `Viewing the round ${ui.viewRound} snapshot (read-only). Comments show their current status.`;
-  else if (L.status === 'preparing') {
+  else if (isPast()) {
+    msg = `Viewing the round ${ui.viewRound} snapshot (read-only). Comments show their current status.`;
+    // An earlier round looked at while Claude is at work: say how to get back to watching.
+    if (stageOf(review)) msg += ` Claude is at work meanwhile: pick "Round ${L.n} (current)" in the round list to go back.`;
+  } else if (L.status === 'preparing') {
     info = reqMode(prev?.request) === 'review';
     msg = info ? `AI review running: ${names(prev.request)}. Findings appear here when they are done.`
       : `Claude is preparing round ${L.n}. Read-only until it publishes.`;
@@ -279,8 +368,12 @@ function render() {
     info = true;
     msg = `Approved on ${new Date(L.approvedAt).toLocaleDateString()}. This review is closed and its server has stopped, so this page no longer updates: you can close this tab. To review the document again, ask Claude to start a new review.`;
   }
-  banner.hidden = !msg; banner.textContent = msg;
+  banner.hidden = !msg || withClaude; // the stage says it itself
+  banner.textContent = msg;
   banner.className = [info ? 'info' : '', withClaude ? 'busy' : ''].join(' ').trim();
+
+  renderStage(stage);
+  if (stage) return; // nothing of the document is on screen
 
   renderChips();
   renderDoc();
@@ -744,7 +837,7 @@ wrapEl.addEventListener('scroll', () => {
   $('#sel-btn').hidden = true;
   if (!$('#popover').hidden && popAnchorEl) position($('#popover'), popAnchorEl);
 });
-window.addEventListener('resize', () => { renderBubbles(); });
+window.addEventListener('resize', () => { if (!mainEl.hidden) renderBubbles(); });
 
 // ---------- header controls ----------
 $('#round-select').addEventListener('change', (e) => {
@@ -1205,6 +1298,7 @@ document.addEventListener('keydown', (e) => {
   const k = e.key;
   if (k === 'Escape') { $('#help').hidden = true; if (!dlg.hidden) dismissDialog(); closePopover(); if (ui.form) closeForm(); $('#sel-btn').hidden = true; return; }
   if (k === '?') { $('#help').hidden = !$('#help').hidden; return; }
+  if (!stageEl.hidden) return; // the stage is up: no comment is on screen to move to or decide on
   if (k === 'j') return move(1);
   if (k === 'k') return move(-1);
   if (k === 'c') { const a = selectionAnchor(); if (a) { e.preventDefault(); newComment(a, window.getSelection().getRangeAt(0).getBoundingClientRect()); } return; }

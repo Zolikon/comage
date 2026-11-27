@@ -40,6 +40,8 @@ test('state, round gating, decisions, static guards', async () => {
     assert.equal((await fetch(`${base}/api/submit`, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'http://evil.example' }, body: '{}' })).status, 403);
     // static
     assert.equal((await fetch(`${base}/lib/text.mjs`)).status, 200);
+    assert.equal((await fetch(`${base}/lib/stage.mjs`)).status, 200);
+    assert.equal((await fetch(`${base}/lib/model.mjs`)).status, 404); // only what the page needs
     assert.equal((await fetch(`${base}/ui/..%2f..%2frewriter.mjs`)).status, 403);
     assert.equal((await fetch(`${base}/.rewriter/reviews/index.md/review.json`)).status, 404);
     assert.equal((await post('/api/submit', {})).status, 200);
